@@ -233,6 +233,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  white-space: nowrap;
   transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
 }
 
@@ -439,12 +440,6 @@ button {
 
 .view-panel.is-active {
   display: block;
-  animation: fadeSlide 0.18s ease;
-}
-
-@keyframes fadeSlide {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
 }
 
 .kpi-grid {
@@ -1518,6 +1513,18 @@ button {
 @media (max-width: 680px) {
   .topbar-inner {
     padding: 0.6rem 0.85rem;
+  }
+
+  .main-nav {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .nav-tab {
+    padding: 0.38rem 0.52rem;
+    font-size: 0.82rem;
+    flex: 1;
+    justify-content: center;
   }
 
   .save-pill {
