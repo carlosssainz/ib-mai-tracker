@@ -13,7 +13,8 @@ import {
 
 import {
   SUBTOPICS,
-  SUBTOPIC_MAP
+  SUBTOPIC_MAP,
+  EXERCISE_CATALOG
 } from "./exercises_catalog.js";
 
 import {
@@ -357,7 +358,8 @@ function updateBrandAndBadges() {
   sub.textContent = pieces.join(" · ");
 
   document.getElementById("badge-exams").textContent = `${stats.examsWorked}/${stats.examsTotal}`;
-  document.getElementById("badge-bank").textContent = String(stats.maiTotal);
+  const bankMaiCount = getAllCatalogExercises(state).filter((x) => x.mai2026 === "in").length;
+  document.getElementById("badge-bank").textContent = String(bankMaiCount);
 
   const reviewBadge = document.getElementById("badge-review");
   reviewBadge.textContent = String(stats.reviewQueueCount);
@@ -441,12 +443,15 @@ function renderExtraResources() {
     return;
   }
   const g = EXTRA_RESOURCES[0];
+  const guideItems = EXERCISE_CATALOG["guia-funciones-derivadas"] || [];
+  const guideIn = guideItems.filter((x) => x.mai2026 === "in").length;
+  const guideOut = guideItems.length - guideIn;
   host.innerHTML = `
     <div class="resource-strip">
       <div style="display:flex; align-items:center; gap:0.55rem; flex-wrap:wrap">
         <span class="tag tag--info">Guía TI-84</span>
         <strong>${esc(g.title)}</strong>
-        <span class="muted">16 problemas clasificados (11 MAI 2026 · 5 MAA excluidos)</span>
+        <span class="muted">${guideItems.length} problemas clasificados (${guideIn} MAI 2026 · ${guideOut} fuera de temario)</span>
       </div>
       <div style="display:flex; gap:0.35rem">
         <button type="button" class="btn btn-soft btn-sm" id="btn-open-guide-drawer">Registrar ejercicios</button>
