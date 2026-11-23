@@ -39,8 +39,60 @@ export const PRACTICE_MODES = [
   { id: "simulacro", label: "Simulacro cronometrado" }
 ];
 
-// Umbrales orientativos de calificación IB (1–7) para MAI NM / Estudios NM (% mínimo para cada nota)
-export const DEFAULT_GRADE_BOUNDARIES = [0, 14, 28, 41, 54, 66, 78];
+// Umbrales oficiales recientes IB MAI NM (Mayo 2026 TZ3): 1–7 (% mínimo)
+export const DEFAULT_GRADE_BOUNDARIES = [0, 13, 25, 37, 50, 63, 76];
+
+export const DEFAULT_COUNTDOWNS = {
+  mock: {
+    label: "Simulacro Colegio",
+    detail: "21–22 Dic · Mock interno",
+    date: "2026-12-21"
+  },
+  official: {
+    label: "Examen Oficial IB MAI NM",
+    detail: "P1: 13 May · P2: 14 May",
+    date: "2027-05-13"
+  }
+};
+
+export const SYLLABUS_LEVELS = [
+  { id: "visto", label: "Ya visto" },
+  { id: "parcial", label: "En curso / Parcial" },
+  { id: "proximo", label: "Próximo (por ver)" }
+];
+
+export const GDC_CHEATSHEET = [
+  {
+    topic: "T4 · Normal y Binomial",
+    ti84: "2nd → VARS (DISTR): normalcdf(min, max, μ, σ) · invNorm(área, μ, σ) · binompdf(n, p, k) · binomcdf(n, p, k)",
+    casio: "MENU → STAT → DIST → NORM (Ncd / InvN) · BINM (Bpd / Bcd)",
+    tip: "Recuerda: binomcdf calcula P(X ≤ k). Para P(X ≥ k) usa 1 − binomcdf(n, p, k − 1)."
+  },
+  {
+    topic: "T4 · Chi-cuadrado (χ²) y Test t",
+    ti84: "2nd → MATRIX → EDIT [A] → luego STAT → TESTS → C: χ²-Test (independencia) · D: χ²GOF-Test · 4: 2-SampTTest (Pooled: Yes)",
+    casio: "MENU → STAT → TEST → CHI (2WAY / GOF) · t (2-S, Pooled: On)",
+    tip: "En MAI NM para test t de dos muestras casi siempre se asume varianzas iguales (Pooled: Yes). Escribe siempre H₀, H₁ y compara valor p con α."
+  },
+  {
+    topic: "T4 · Regresión y Estadística (1-Var)",
+    ti84: "STAT → EDIT (L1, L2) → STAT → CALC → 1-Var Stats · 4: LinReg(ax+b). Activa r y r² en MODE → STAT DIAGNOSTICS: ON",
+    casio: "MENU → STAT → CALC → 1-VAR / REG → X (ax+b)",
+    tip: "Para correlación de rangos de Spearman: ordena los datos en rangos (1..n) en L1 y L2 y aplica LinReg para leer r."
+  },
+  {
+    topic: "T1 · Matemáticas Financieras (TVM Solver)",
+    ti84: "APPS → 1: Finance → 1: TVM Solver. N (periodos totales), I% (anual), PV (signo − si inviertes), PMT, FV, P/Y, C/Y. Resolver: ALPHA → ENTER",
+    casio: "MENU → TVM → F2 (Compound Interest). Misma regla de signos (dinero que sale −, dinero que entra +).",
+    tip: "Error nº 1 en IB: confundir signo de PV/PMT/FV o poner I% mensual en lugar de anual cuando C/Y = 12."
+  },
+  {
+    topic: "T2/T5 · Gráficas, Intersecciones y Derivadas",
+    ti84: "Y= → GRAPH → 2nd → CALC: 2: zero · 3/4: min/max · 5: intersect · 6: dy/dx · 7: ∫f(x)dx. Numérico: MATH → 8: nDeriv · 9: fnInt",
+    casio: "MENU → GRAPH → F5 (G-Solv): ROOT / MAX / MIN / ISCT / ∫dx. Activar Derivative: On en SET UP.",
+    tip: "Comprueba siempre MODE → DEGREE (grados) antes de ejercicios de trigonometría. En IB da resultados a 3 cifras significativas (3 c.s.) salvo que pidan otra precisión."
+  }
+];
 
 export const EXTRA_RESOURCES = [
   {

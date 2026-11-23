@@ -11,7 +11,7 @@ export function renderEvolutionChart(points, boundaries) {
     return `
       <div class="chart-empty">
         <p class="chart-empty-title">Aún no hay resultados registrados</p>
-        <p class="chart-empty-sub">Cuando registres una puntuación o Nota IB en cualquier examen, aquí verás la evolución temporal de tu alumno.</p>
+        <p class="chart-empty-sub">Puntúa ejercicios del 1 al 10 o registra una nota IB en cualquier examen para ver la curva de evolución.</p>
       </div>
     `;
   }
@@ -28,12 +28,11 @@ export function renderEvolutionChart(points, boundaries) {
     return pad.left + (idx / (points.length - 1)) * plotW;
   };
 
-  const b4 = boundaries[3] ?? 41;
-  const b6 = boundaries[5] ?? 66;
-  const b7 = boundaries[6] ?? 78;
+  const b4 = boundaries[3] ?? 37;
+  const b6 = boundaries[5] ?? 63;
+  const b7 = boundaries[6] ?? 76;
 
-  const yTicks = [0, 25, 50, 75, 100];
-  const gridLines = yTicks.map((v) => {
+  const gridLines = [0, 25, 50, 75, 100].map((v) => {
     const y = yOf(v);
     return `
       <line x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}" class="chart-grid" />
@@ -65,7 +64,6 @@ export function renderEvolutionChart(points, boundaries) {
     areaPath = `${linePath} L ${coords[coords.length - 1].x} ${pad.top + plotH} L ${coords[0].x} ${pad.top + plotH} Z`;
   }
 
-  // Decide which X labels to show so they never collide
   const maxLabels = 7;
   const step = coords.length > maxLabels ? Math.ceil(coords.length / maxLabels) : 1;
 
@@ -90,8 +88,8 @@ export function renderEvolutionChart(points, boundaries) {
       <svg viewBox="0 0 ${width} ${height}" class="evolution-svg" role="img" aria-label="Evolución de resultados IB">
         <defs>
           <linearGradient id="ibAreaGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22" />
-            <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.01" />
+            <stop offset="0%" stop-color="var(--cyan)" stop-opacity="0.26" />
+            <stop offset="100%" stop-color="var(--cyan)" stop-opacity="0.01" />
           </linearGradient>
         </defs>
         <rect x="${pad.left}" y="${yOf(100)}" width="${plotW}" height="${yOf(b6) - yOf(100)}" class="chart-band-high" />
@@ -106,22 +104,13 @@ export function renderEvolutionChart(points, boundaries) {
 }
 
 export function renderTopicsMastery(topicStats, untaggedCount = 0) {
-  const totalTagged = topicStats.reduce((s, t) => s + t.total, 0);
-  if (totalTagged === 0) {
-    return `
-      <div class="chart-empty">
-        <p class="chart-empty-title">Sin ejercicios etiquetados por tema todavía</p>
-        <p class="chart-empty-sub">Al marcar ejercicios individuales en un examen y asignarles un tema oficial MAI (T1–T5), verás aquí qué bloques domina tu alumno y cuáles conviene reforzar.</p>
-      </div>
-    `;
-  }
-
   const rows = topicStats.map((t) => {
     const total = t.total;
     const pBien = total ? (t.bien / total) * 100 : 0;
     const pRep = total ? (t.repasar / total) * 100 : 0;
     const pFail = total ? (t.fallado / total) * 100 : 0;
     const mastery = total ? Math.round((t.bien / total) * 100) : null;
+    const catalogTag = t.catalogTotal ? `<span class="muted"> · ${total}/${t.catalogTotal} del banco</span>` : "";
 
     return `
       <div class="topic-row">
@@ -132,11 +121,11 @@ export function renderTopicsMastery(topicStats, untaggedCount = 0) {
           </div>
           <div class="topic-counts tabular">
             ${total > 0
-              ? `<strong>${mastery}%</strong> bien <span class="muted">(${t.bien}/${total})</span>`
-              : `<span class="muted">Sin datos</span>`}
+              ? `<strong>${mastery}%</strong> bien <span class="muted">(${t.bien}/${total})</span>${catalogTag}`
+              : `<span class="muted">0/${t.catalogTotal || 0} practicados</span>`}
           </div>
         </div>
-        <div class="topic-bar" role="img" aria-label="${escapeHtml(t.short)}: ${t.bien} bien, ${t.repasar} repasar, ${t.fallado} duda">
+        <div class="topic-bar">
           ${total > 0 ? `
             <span class="topic-seg topic-seg--bien" style="width:${pBien.toFixed(1)}%" title="${t.bien} bien"></span>
             <span class="topic-seg topic-seg--repasar" style="width:${pRep.toFixed(1)}%" title="${t.repasar} con ayuda / repasar"></span>
@@ -154,8 +143,36 @@ export function renderTopicsMastery(topicStats, untaggedCount = 0) {
         <span><i class="dot dot--bien"></i> Bien</span>
         <span><i class="dot dot--repasar"></i> Con ayuda / Repasar</span>
         <span><i class="dot dot--fallado"></i> Fallado / Duda</span>
-        ${untaggedCount > 0 ? `<span class="muted">· ${untaggedCount} ejercicio${untaggedCount === 1 ? "" : "s"} sin tema asignado</span>` : ""}
+        ${untaggedCount > 0 ? `<span class="muted">· ${untaggedCount} sin tema</span>` : ""}
       </div>
+    </div>
+  `;
+}
+
+export function renderTopMistakes(topMistakes) {
+  if (!topMistakes || topMistakes.length === 0) {
+    return `
+      <div class="chart-empty">
+        <p class="chart-empty-title">Sin fallos típicos IB marcados todavía</p>
+        <p class="chart-empty-sub">Al corregir ejercicios, pulsa los chips de fallo (ej. 3 c.s., GDC, Contexto, FT) para detectar automáticamente los patrones que más nota restan.</p>
+      </div>
+    `;
+  }
+  const maxC = topMistakes[0].count || 1;
+  return `
+    <div class="mistakes-analytics">
+      ${topMistakes.map((m) => `
+        <div class="mistake-stat-row">
+          <div class="mistake-stat-head">
+            <span class="mistake-stat-name">${escapeHtml(m.label)}</span>
+            <span class="tag ${m.severity === "high" ? "tag--bad" : m.severity === "mid" ? "tag--warn" : "tag--info"} tabular">${m.count} ${m.count === 1 ? "vez" : "veces"}</span>
+          </div>
+          <div class="topic-bar" style="height:7px">
+            <span class="${m.severity === "high" ? "topic-seg--fallado" : m.severity === "mid" ? "topic-seg--repasar" : "mini-bar-seg--cyan"}" style="width:${Math.round((m.count / maxC) * 100)}%"></span>
+          </div>
+          <div class="muted" style="font-size:0.75rem; margin-top:0.2rem">${escapeHtml(m.ibRule)}</div>
+        </div>
+      `).join("")}
     </div>
   `;
 }

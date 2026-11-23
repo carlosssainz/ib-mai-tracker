@@ -1,27 +1,21 @@
-# Cuaderno IB · MAI NM
+# Cuaderno IB · MAI NM (Edición 2026)
 
-Aplicación web ligera de seguimiento para **IB Matemáticas: Aplicaciones e Interpretación — Nivel Medio (MAI NM)**.
+Plataforma web compartida profesor–alumno para preparar **IB Matemáticas: Aplicaciones e Interpretación — Nivel Medio (MAI NM)** con los exámenes de Google Drive.
 
-🔗 **Aplicación online (GitHub Pages):** https://carlosssainz.github.io/ib-mai-tracker/  
+🔗 **Web online (GitHub Pages):** https://carlosssainz.github.io/ib-mai-tracker/  
 📁 **Carpeta de exámenes en Google Drive:** [EXÁMENES EST MATEMATICOS](https://drive.google.com/drive/folders/1Ht5efqUbbUgAKdLeCtuGRvZSZUtb0M5A)
 
-## Funcionalidades principales
+## Novedades clave (v2)
 
-- **Catálogo de 59 exámenes IB + guía TI-84 Plus**, espejo exacto de las carpetas de Google Drive (`01 - MAI NM 2021`, `02 - Con Soluciones 2015–2018`, `03 - Solo Enunciados 2000–2016`, `04 - Retos y Apuntes`), con acceso en 1 clic a cada **Enunciado** y **Solución**.
-- **Registro dual (global + por ejercicio)**:
-  - Puntuación global con cálculo automático de `%` y **Nota IB (1–7)** (umbrales editables) o selección directa de Nota IB.
-  - Desglose pregunta por pregunta (`Ej. 1..N`) con las puntuaciones máximas oficiales IB pre-cargadas, estado (`Bien`, `Con ayuda / Repasar`, `Fallado / Duda`), tema oficial MAI (`T1–T5`), nota individual y suma automática al total.
-  - Historial de múltiples intentos por examen.
-- **Historial y progreso**:
-  - Gráfico de evolución de resultados (`%` y Nota IB 1–7).
-  - Barras de dominio por **Tema MAI NM (T1–T5)**.
-  - **Cola de repaso automática** con todos los ejercicios marcados con duda o ayuda.
-  - **Línea de tiempo cronológica** de sesiones y ejercicios practicados.
-- **Notas y repaso**:
-  - Diario de clases, errores frecuentes, trucos de calculadora GDC, fórmulas clave y deberes, con fijado (`📌`), estado *Por repasar / Repasado* y recopilación automática de todas las notas escritas dentro de exámenes y ejercicios.
-- **Privacidad y copias de seguridad**:
-  - Ningún resultado ni nota del alumno se sube a GitHub: todo se guarda localmente en tu navegador (`localStorage`).
-  - Incluye **Exportar / Importar copia `.json`** (fusión o reemplazo), **Exportar `.csv`** e **Informe imprimible / PDF**.
+- **Sincronización en tiempo real (< 1 s) vía Firebase Realtime Database**: lo que escriba tu alumno y lo que registres tú se actualiza al instante en ambos navegadores, con **Modo Profesor / Modo Alumno**, trazabilidad de autoría (`Prof.` / `Alumno`), bloqueo opcional de enlaces a Soluciones durante simulacros y botón **Copiar enlace listo para mi alumno**.
+- **625 ejercicios clasificados según MAI NM 2026** (609 de los 59 exámenes + 16 de la guía TI-84 Plus, incluyendo OCR de los 16 exámenes escaneados):
+  - Pestaña **Por Temas** para filtrar por bloque (`T1–T5`), subtema concreto (`Derivadas`, `Probabilidad y Venn`, `Normal`, `Chi-cuadrado`, `Rectas`, `Finanzas`…), estado del temario actual del alumno (`Ya visto` / `Parcial` / `Próximo`) y ocultar en 1 clic lo que **no entra en MAI NM 2026** (lógica proposicional, límites, cálculo analítico MAA).
+- **Calificación intuitiva 1–10 → Nota IB real (1–7)** + **Selector de fallos típicos IB**:
+  - Puntúa cada ejercicio del 0 al 10 y la app lo pondera automáticamente al peso oficial IB de la pregunta y calcula la Nota IB real (con 3 presets de curvas IB 2025–2026 editables).
+  - 8 chips de fallos típicos IB (`3 c.s.`, `Arrastre FT`, `Sin proceso`, `Fallo GDC`, `Contexto/Unid.`, etc.) con sugerencia de nota según criterios de examinador IB y panel **Top Fallos IB**.
+- **Contadores regresivos editables**: Simulacro del colegio (`21–22 Dic 2026`) y Examen Oficial IB MAI NM (`13–14 May 2027`).
+- **Temporizador con tiempo óptimo por ejercicio** (`1,125 min/pt` en MAI 2021 y `1,0 min/pt` en Estudios NM) y modo **Simulacro 90 min** con aviso y registro de tiempo real.
+- **Diseño inspirado en los menús de GTA VI**: tema oscuro sobrio **Leonida Night** por defecto + modo claro **Vice Daylight** en 1 clic, más chuleta rápida **GDC (TI-84 / Casio)**.
 
 ## Verificación local
 

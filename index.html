@@ -1,55 +1,66 @@
 <!DOCTYPE html>
-<html lang="es" data-theme="light">
+<html lang="es" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Cuaderno IB · MAI NM — Seguimiento de Exámenes, Ejercicios y Notas</title>
-  <meta name="description" content="Aplicación de seguimiento para IB Matemáticas: Aplicaciones e Interpretación Nivel Medio (MAI NM). Registra resultados, notas IB 1-7, ejercicios individuales por tema y apuntes de repaso." />
+  <title>Cuaderno IB · MAI NM — Banco Clasificado, Nota IB Real y Sync en Vivo</title>
+  <meta name="description" content="Plataforma compartida profesor-alumno para IB Matemáticas: Aplicaciones e Interpretación NM (MAI 2026). 625 ejercicios clasificados, calificación 1-10 a Nota IB real, temporizador óptimo, contadores y sincronización en vivo con Firebase." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+  <div class="vice-stripe" aria-hidden="true"></div>
   <header class="topbar">
     <div class="topbar-inner">
       <div class="brand">
         <div class="brand-mark" aria-hidden="true">IB</div>
         <div class="brand-text">
           <h1>Cuaderno IB · MAI NM</h1>
-          <div class="brand-sub" id="brand-subtitle">Matemáticas: Aplicaciones e Interpretación · Nivel Medio</div>
+          <div class="brand-sub" id="brand-subtitle">Aplicaciones e Interpretación NM · Temario 2026</div>
         </div>
       </div>
 
-      <nav class="main-nav" aria-label="Secciones principales">
+      <nav class="main-nav" aria-label="Menú principal">
         <button type="button" class="nav-tab is-active" data-view="exams" id="tab-exams">
           Exámenes <span class="nav-badge tabular" id="badge-exams">0/59</span>
+        </button>
+        <button type="button" class="nav-tab" data-view="bank" id="tab-bank">
+          Por Temas <span class="nav-badge tabular" id="badge-bank">565</span>
         </button>
         <button type="button" class="nav-tab" data-view="history" id="tab-history">
           Historial <span class="nav-badge tabular" id="badge-review">0</span>
         </button>
         <button type="button" class="nav-tab" data-view="notes" id="tab-notes">
-          Notas y Repaso <span class="nav-badge tabular" id="badge-notes">0</span>
+          Notas <span class="nav-badge tabular" id="badge-notes">0</span>
         </button>
       </nav>
 
       <div class="topbar-actions">
-        <span class="save-pill" id="save-indicator" title="Los datos se guardan automáticamente en este navegador">
-          <i class="save-dot"></i> Guardado local
-        </span>
+        <button type="button" class="status-chip status-chip--role-prof" id="btn-role-pill" title="Cambiar entre Modo Profesor y Modo Alumno">
+          Prof.
+        </button>
+        <button type="button" class="status-chip" id="btn-sync-pill" title="Configurar o revisar sincronización en vivo con Firebase">
+          <i class="live-dot"></i> <span id="sync-pill-text">Local</span>
+        </button>
+        <button type="button" class="btn btn-cyan btn-sm" id="btn-open-gdc" title="Chuleta rápida de calculadora TI-84 y Casio">GDC</button>
         <a id="drive-root-link" class="btn btn-sm" href="https://drive.google.com/drive/folders/1Ht5efqUbbUgAKdLeCtuGRvZSZUtb0M5A" target="_blank" rel="noopener">
           Drive ↗
         </a>
-        <button type="button" class="btn btn-sm" id="btn-open-settings">Respaldo</button>
+        <button type="button" class="btn btn-sm" id="btn-open-settings">Ajustes</button>
         <button type="button" class="btn btn-sm" id="btn-print-report" title="Imprimir o guardar informe PDF">Informe</button>
-        <button type="button" class="btn btn-icon" id="btn-toggle-theme" aria-label="Cambiar tema claro u oscuro" title="Cambiar tema">
-          ◐
+        <button type="button" class="btn btn-icon" id="btn-toggle-theme" aria-label="Cambiar entre Leonida Night y Vice Daylight" title="Cambiar tema">
+          ☀
         </button>
       </div>
     </div>
   </header>
 
   <main class="container">
+    <!-- ==================== HUD SUPERIOR: CONTADORES + COBERTURA MAI ==================== -->
+    <section class="hud-strip" id="hud-strip" aria-label="Contadores y objetivo MAI 2026"></section>
+
     <!-- ==================== VISTA 1: EXÁMENES ==================== -->
     <section class="view-panel is-active" id="view-exams" aria-labelledby="tab-exams">
       <div class="kpi-grid" id="kpi-strip"></div>
@@ -57,37 +68,28 @@
       <div class="filter-shell">
         <div class="category-pills" id="category-pills" role="tablist" aria-label="Bloques de carpeta"></div>
         <div class="filter-row">
-          <div>
-            <label for="filter-search" class="sr-only">Buscar examen</label>
-            <input id="filter-search" class="input" type="search" placeholder="Buscar por año, mayo/noviembre, asignatura o nota…" />
-          </div>
-          <div>
-            <label for="filter-paper" class="sr-only">Filtrar por prueba</label>
-            <select id="filter-paper" class="select">
-              <option value="all">Todas las pruebas</option>
-              <option value="1">Solo Prueba 1</option>
-              <option value="2">Solo Prueba 2</option>
-            </select>
-          </div>
-          <div>
-            <label for="filter-status" class="sr-only">Filtrar por estado</label>
-            <select id="filter-status" class="select">
-              <option value="all">Todos los estados</option>
-              <option value="pendiente">Pendiente</option>
-              <option value="en-progreso">En progreso</option>
-              <option value="completado">Completado</option>
-              <option value="repasar">Para repasar</option>
-            </select>
-          </div>
-          <div>
-            <label for="filter-sort" class="sr-only">Ordenar exámenes</label>
-            <select id="filter-sort" class="select">
-              <option value="newest">Más recientes primero</option>
-              <option value="oldest">Más antiguos primero</option>
-              <option value="practiced">Última práctica</option>
-              <option value="grade-asc">Menor nota primero</option>
-            </select>
-          </div>
+          <input id="filter-search" class="input" type="search" placeholder="Buscar por año, convocatoria, tema o nota…" />
+          <select id="filter-exam-subtopic" class="select">
+            <option value="all">Todos los temas abordados</option>
+          </select>
+          <select id="filter-paper" class="select">
+            <option value="all">Todas las pruebas</option>
+            <option value="1">Solo Prueba 1</option>
+            <option value="2">Solo Prueba 2</option>
+          </select>
+          <select id="filter-status" class="select">
+            <option value="all">Todos los estados</option>
+            <option value="pendiente">Pendiente</option>
+            <option value="en-progreso">En progreso</option>
+            <option value="completado">Completado</option>
+            <option value="repasar">Para repasar</option>
+          </select>
+          <select id="filter-sort" class="select">
+            <option value="newest">Más recientes primero</option>
+            <option value="oldest">Más antiguos primero</option>
+            <option value="practiced">Última práctica</option>
+            <option value="grade-asc">Menor nota primero</option>
+          </select>
         </div>
       </div>
 
@@ -95,19 +97,63 @@
 
       <div class="catalog-meta">
         <span id="catalog-count">Mostrando 59 exámenes</span>
-        <span>Haz clic en cualquier examen para registrar resultados, marcar ejercicios y añadir notas.</span>
+        <span>Clic en un examen para calificar 1–10 → IB real, usar el temporizador óptimo y anotar fallos.</span>
       </div>
 
       <div class="exam-list" id="exam-list"></div>
     </section>
 
-    <!-- ==================== VISTA 2: HISTORIAL ==================== -->
+    <!-- ==================== VISTA 2: BANCO POR TEMAS (625 EJERCICIOS) ==================== -->
+    <section class="view-panel" id="view-bank" aria-labelledby="tab-bank">
+      <div class="filter-shell">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem; flex-wrap:wrap">
+          <div class="category-pills" id="bank-scope-pills">
+            <button type="button" class="pill pill--cyan is-active" data-bscope="visto">Solo temario ya visto</button>
+            <button type="button" class="pill pill--cyan" data-bscope="mai-all">Todo MAI NM 2026 (incl. Finanzas)</button>
+            <button type="button" class="pill pill--cyan" data-bscope="proximo">Próximos temas (Finanzas…)</button>
+            <button type="button" class="pill" data-bscope="all">Incluir fuera de MAI (lógica/MAA)</button>
+          </div>
+          <button type="button" class="btn btn-gold btn-sm" id="btn-open-syllabus">Configurar mi temario actual</button>
+        </div>
+
+        <div class="filter-row">
+          <input id="bank-search" class="input" type="search" placeholder="Buscar por enunciado (ej. Venn, derivada, normal, recta, 2018)…" />
+          <select id="bank-topic" class="select">
+            <option value="all">Todos los bloques (T1–T5)</option>
+          </select>
+          <select id="bank-subtopic" class="select">
+            <option value="all">Todos los subtemas</option>
+          </select>
+          <select id="bank-status" class="select">
+            <option value="all">Todos los estados</option>
+            <option value="pendiente">Sin hacer (Pendiente)</option>
+            <option value="bien">Bien ✓</option>
+            <option value="repasar">Con ayuda / Repasar</option>
+            <option value="fallado">Fallado / Duda</option>
+          </select>
+          <select id="bank-sol" class="select">
+            <option value="all">Con o sin solución</option>
+            <option value="yes">Solo con Solución PDF</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="catalog-meta">
+        <span id="bank-count">Mostrando ejercicios</span>
+        <span class="muted">Lanza el temporizador óptimo desde cualquier ejercicio o dale nota 1–10 directamente.</span>
+      </div>
+
+      <div class="bank-list" id="bank-list"></div>
+      <div style="text-align:center; margin-top:1rem" id="bank-load-more-wrap"></div>
+    </section>
+
+    <!-- ==================== VISTA 3: HISTORIAL Y FALLOS IB ==================== -->
     <section class="view-panel" id="view-history" aria-labelledby="tab-history">
       <div class="two-col-grid">
         <div class="panel-card">
           <div class="panel-card-head">
             <h3>Evolución de resultados (Nota IB y %)</h3>
-            <span class="muted" style="font-size:0.78rem">Clic en un punto para abrir el examen</span>
+            <span class="muted" style="font-size:0.76rem">Clic en un punto para abrir</span>
           </div>
           <div id="evolution-chart-container"></div>
         </div>
@@ -115,10 +161,18 @@
         <div class="panel-card">
           <div class="panel-card-head">
             <h3>Dominio por Tema MAI NM (T1–T5)</h3>
-            <span class="muted" style="font-size:0.78rem">Basado en ejercicios etiquetados</span>
+            <span class="muted" style="font-size:0.76rem">Cobertura y precisión por bloque</span>
           </div>
           <div id="topics-chart-container"></div>
         </div>
+      </div>
+
+      <div class="panel-card" style="margin-bottom:0.95rem">
+        <div class="panel-card-head">
+          <h3>Top Fallos Típicos IB detectados</h3>
+          <span class="muted" style="font-size:0.78rem">Patrones marcados al corregir ejercicios — clave antes del simulacro</span>
+        </div>
+        <div id="top-mistakes-container"></div>
       </div>
 
       <div class="two-col-grid">
@@ -142,19 +196,19 @@
       </div>
     </section>
 
-    <!-- ==================== VISTA 3: NOTAS Y REPASO ==================== -->
+    <!-- ==================== VISTA 4: NOTAS Y REPASO ==================== -->
     <section class="view-panel" id="view-notes" aria-labelledby="tab-notes">
       <div class="notes-layout">
         <div class="panel-card note-editor-card">
           <div class="panel-card-head">
             <h3 id="note-form-heading">Nueva nota de repaso / clase</h3>
-            <button type="button" class="btn btn-ghost btn-sm" id="btn-note-cancel" style="display:none">Cancelar edición</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-note-cancel" style="display:none">Cancelar</button>
           </div>
-          <form id="note-form" style="display:flex; flex-direction:column; gap:0.7rem">
+          <form id="note-form" style="display:flex; flex-direction:column; gap:0.68rem">
             <input type="hidden" id="note-edit-id" value="" />
             <div>
               <label class="field-label" for="note-title">Título</label>
-              <input id="note-title" class="input" type="text" required placeholder="Ej. Clase 19 Nov · Repaso Chi-cuadrado en TI-84" />
+              <input id="note-title" class="input" type="text" required placeholder="Ej. Repaso Chi-cuadrado y redondeo a 3 c.s." />
             </div>
             <div class="form-grid-2">
               <div>
@@ -182,10 +236,10 @@
             </div>
             <div>
               <label class="field-label" for="note-body">Contenido y puntos a recordar</label>
-              <textarea id="note-body" class="textarea" rows="5" required placeholder="Anota qué ejercicios hicisteis, errores frecuentes, comandos de calculadora o deberes para la próxima sesión…"></textarea>
+              <textarea id="note-body" class="textarea" rows="5" required placeholder="Qué ejercicios hicisteis, dudas pendientes, comandos de calculadora o qué repasar antes del 21 dic…"></textarea>
             </div>
             <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap">
-              <label style="display:inline-flex; align-items:center; gap:0.4rem; font-size:0.84rem; cursor:pointer">
+              <label style="display:inline-flex; align-items:center; gap:0.4rem; font-size:0.83rem; cursor:pointer">
                 <input type="checkbox" id="note-pinned" /> Fijar arriba
               </label>
               <button type="submit" class="btn btn-primary" id="btn-note-save">Guardar nota</button>
@@ -202,7 +256,7 @@
               <button type="button" class="pill" data-nscope="from-exams">Notas de exámenes y ejercicios</button>
             </div>
             <div class="filter-row" style="grid-template-columns: minmax(180px, 1.6fr) 1fr 1fr">
-              <input id="notes-search" class="input" type="search" placeholder="Buscar en notas y comentarios de ejercicios…" />
+              <input id="notes-search" class="input" type="search" placeholder="Buscar en notas y comentarios…" />
               <select id="notes-filter-cat" class="select">
                 <option value="all">Todas las categorías</option>
               </select>
@@ -211,12 +265,32 @@
               </select>
             </div>
           </div>
-
           <div id="notes-list" class="notes-grid"></div>
         </div>
       </div>
     </section>
   </main>
+
+  <!-- ==================== FLOATING ACTIVE TIMER HUD ==================== -->
+  <div class="timer-hud" id="timer-hud" role="region" aria-label="Temporizador activo">
+    <div class="timer-hud-row">
+      <div style="display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap">
+        <span class="timer-clock tabular" id="timer-clock">06:00</span>
+        <div>
+          <strong id="timer-label" style="font-size:0.86rem">Ejercicio</strong>
+          <div class="muted" style="font-size:0.74rem" id="timer-sub">Tiempo óptimo IB</div>
+        </div>
+      </div>
+      <div style="display:flex; gap:0.35rem; flex-wrap:wrap">
+        <button type="button" class="btn btn-sm" id="btn-timer-toggle">Pausar</button>
+        <button type="button" class="btn btn-sm" id="btn-timer-reset">Reiniciar</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-timer-mute" title="Silenciar aviso">🔔</button>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-timer-finish">Guardar tiempo</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-timer-close" title="Cerrar sin guardar">✕</button>
+      </div>
+    </div>
+    <div class="timer-bar"><div class="timer-bar-fill" id="timer-bar-fill" style="width:0%"></div></div>
+  </div>
 
   <!-- ==================== DRAWER DE EXAMEN ==================== -->
   <div class="overlay" id="exam-drawer-overlay" aria-hidden="true">
@@ -226,17 +300,78 @@
           <h2 id="drawer-exam-title">Examen</h2>
           <div class="drawer-links" id="drawer-exam-links"></div>
         </div>
-        <button type="button" class="btn btn-ghost btn-sm" id="btn-close-drawer" aria-label="Cerrar panel">Cerrar ✕</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-close-drawer">Cerrar ✕</button>
       </div>
       <div class="drawer-body" id="drawer-exam-body"></div>
     </aside>
   </div>
 
+  <!-- ==================== MODAL: EDITAR CONTADORES ==================== -->
+  <div class="modal-backdrop" id="countdown-modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h2>Configurar Contadores Regresivos</h2>
+        <button type="button" class="btn btn-ghost btn-sm" data-close-modal="countdown-modal-backdrop">Cerrar ✕</button>
+      </div>
+      <form id="countdown-form" style="display:flex; flex-direction:column; gap:0.9rem">
+        <div class="panel-card">
+          <h3 style="margin:0 0 0.6rem; font-size:0.95rem" class="display-font">1. Simulacro del colegio</h3>
+          <div class="form-grid-2">
+            <div><label class="field-label" for="cd-mock-label">Nombre</label><input id="cd-mock-label" class="input" type="text" required /></div>
+            <div><label class="field-label" for="cd-mock-date">Fecha inicio</label><input id="cd-mock-date" class="input" type="date" required /></div>
+          </div>
+          <div style="margin-top:0.55rem"><label class="field-label" for="cd-mock-detail">Detalle (ej. 21–22 Dic)</label><input id="cd-mock-detail" class="input" type="text" /></div>
+        </div>
+        <div class="panel-card">
+          <h3 style="margin:0 0 0.6rem; font-size:0.95rem" class="display-font">2. Examen Oficial IB MAI NM</h3>
+          <div class="form-grid-2">
+            <div><label class="field-label" for="cd-off-label">Nombre</label><input id="cd-off-label" class="input" type="text" required /></div>
+            <div><label class="field-label" for="cd-off-date">Fecha inicio</label><input id="cd-off-date" class="input" type="date" required /></div>
+          </div>
+          <div style="margin-top:0.55rem"><label class="field-label" for="cd-off-detail">Detalle (ej. P1: 13 May · P2: 14 May)</label><input id="cd-off-detail" class="input" type="text" /></div>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:0.5rem">
+          <button type="button" class="btn" data-close-modal="countdown-modal-backdrop">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Guardar contadores</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== MODAL: MI TEMARIO ACTUAL ==================== -->
+  <div class="modal-backdrop" id="syllabus-modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h2>Temario Actual del Alumno (MAI NM 2026)</h2>
+        <button type="button" class="btn btn-ghost btn-sm" data-close-modal="syllabus-modal-backdrop">Cerrar ✕</button>
+      </div>
+      <p class="muted" style="margin:0 0 0.8rem; font-size:0.82rem">
+        Ajusta qué subtemas ha visto ya en clase. El filtro <strong>«Solo temario ya visto»</strong> del Banco por Temas se actualiza automáticamente (y se sincroniza entre ambos).
+      </p>
+      <div class="panel-card" style="padding:0.25rem 0.6rem" id="syllabus-checklist"></div>
+      <div style="display:flex; justify-content:space-between; margin-top:0.85rem; gap:0.5rem; flex-wrap:wrap">
+        <button type="button" class="btn btn-ghost btn-sm" id="btn-reset-syllabus">Restaurar temario inicial</button>
+        <button type="button" class="btn btn-primary btn-sm" data-close-modal="syllabus-modal-backdrop">Listo</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== MODAL: CHULETA GDC ==================== -->
+  <div class="modal-backdrop" id="gdc-modal-backdrop" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-head">
+        <h2>Chuleta Calculadora GDC (TI-84 Plus / Casio)</h2>
+        <button type="button" class="btn btn-ghost btn-sm" data-close-modal="gdc-modal-backdrop">Cerrar ✕</button>
+      </div>
+      <div id="gdc-cheatsheet-body"></div>
+    </div>
+  </div>
+
   <!-- ==================== MODAL: REGISTRAR SESIÓN MANUAL ==================== -->
   <div class="modal-backdrop" id="log-modal-backdrop" aria-hidden="true">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="log-modal-title">
+    <div class="modal" role="dialog" aria-modal="true">
       <div class="modal-head">
-        <h2 id="log-modal-title">Registrar sesión de práctica</h2>
+        <h2>Registrar sesión de práctica</h2>
         <button type="button" class="btn btn-ghost btn-sm" data-close-modal="log-modal-backdrop">Cerrar ✕</button>
       </div>
       <form id="log-session-form" style="display:flex; flex-direction:column; gap:0.75rem">
@@ -256,7 +391,7 @@
         </div>
         <div>
           <label class="field-label" for="log-summary">Resumen de la sesión</label>
-          <textarea id="log-summary" class="textarea" rows="3" placeholder="Ej. Hicimos los 4 primeros problemas en clase; repasar planteamiento de optimización."></textarea>
+          <textarea id="log-summary" class="textarea" rows="3" placeholder="Ej. Hicimos los ejercicios de Venn y normal; repasar redondeo a 3 c.s."></textarea>
         </div>
         <div style="display:flex; justify-content:flex-end; gap:0.5rem">
           <button type="button" class="btn" data-close-modal="log-modal-backdrop">Cancelar</button>
@@ -266,71 +401,126 @@
     </div>
   </div>
 
-  <!-- ==================== MODAL: RESPALDO Y AJUSTES ==================== -->
+  <!-- ==================== MODAL: SYNC FIREBASE, ROL Y RESPALDO ==================== -->
   <div class="modal-backdrop" id="settings-modal-backdrop" aria-hidden="true">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+    <div class="modal" role="dialog" aria-modal="true">
       <div class="modal-head">
-        <h2 id="settings-modal-title">Respaldo, exportación y ajustes IB</h2>
+        <h2>Sincronización en Vivo, Rol y Ajustes IB</h2>
         <button type="button" class="btn btn-ghost btn-sm" data-close-modal="settings-modal-backdrop">Cerrar ✕</button>
       </div>
 
-      <div style="display:flex; flex-direction:column; gap:1rem">
+      <div style="display:flex; flex-direction:column; gap:0.95rem">
+        <!-- BLOQUE 1: FIREBASE REALTIME DATABASE -->
         <div class="panel-card">
-          <h3 style="margin:0 0 0.65rem; font-size:0.93rem">Perfil del alumno y umbrales IB (1–7)</h3>
-          <div class="form-grid-2" style="margin-bottom:0.75rem">
+          <div class="panel-card-head" style="margin-bottom:0.5rem">
+            <h3>Sincronización en vivo (Firebase Realtime DB)</h3>
+            <span class="tag tag--info" id="sync-modal-badge">Solo local</span>
+          </div>
+          <p class="muted" style="margin:0 0 0.7rem; font-size:0.8rem">
+            Todo lo que escriba tu alumno y lo que registres tú se sincroniza al instante (&lt; 1 s) usando tu cuenta gratuita de Google Firebase (plan Spark, sin tarjeta y nunca se pausa).
+          </p>
+
+          <div class="form-grid-2" style="margin-bottom:0.65rem">
             <div>
-              <label class="field-label" for="set-student-name">Nombre del alumno (opcional)</label>
-              <input id="set-student-name" class="input" type="text" placeholder="Ej. Alex / Alumno MAI NM" />
+              <label class="field-label" for="sync-db-url">URL de Firebase Realtime Database</label>
+              <input id="sync-db-url" class="input mono" style="font-size:0.78rem" type="url" placeholder="https://tu-proyecto-default-rtdb.europe-west1.firebasedatabase.app" />
             </div>
             <div>
-              <label class="field-label" for="set-target-session">Convocatoria objetivo</label>
-              <input id="set-target-session" class="input" type="text" placeholder="Ej. Mayo 2027" />
+              <label class="field-label" for="sync-room-code">Código de sala compartido (PIN)</label>
+              <input id="sync-room-code" class="input mono" type="text" placeholder="ej. mai-2027-carlos" />
             </div>
           </div>
-          <div>
-            <span class="field-label">Porcentaje mínimo para cada Nota IB (editable)</span>
+
+          <div style="display:flex; flex-wrap:wrap; gap:0.45rem; margin-bottom:0.7rem">
+            <button type="button" class="btn btn-primary btn-sm" id="btn-sync-connect">Probar y conectar en vivo</button>
+            <button type="button" class="btn btn-cyan btn-sm" id="btn-copy-student-link">Copiar enlace listo para mi alumno</button>
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-sync-disconnect">Desconectar</button>
+          </div>
+
+          <details style="font-size:0.8rem; color:var(--text-secondary)">
+            <summary style="cursor:pointer; font-weight:700; color:var(--gold)">Ver guía rápida de 2 minutos para crear tu URL gratuita en Firebase</summary>
+            <ol style="margin:0.5rem 0 0.5rem 1.2rem; padding:0; display:flex; flex-direction:column; gap:0.3rem">
+              <li>Entra en <a href="https://console.firebase.google.com/" target="_blank" rel="noopener">console.firebase.google.com</a> con tu cuenta de Google y pulsa <strong>Crear proyecto</strong> (desactiva Analytics si quieres ir más rápido).</li>
+              <li>En el menú izquierdo abre <strong>Compilación → Realtime Database → Crear base de datos</strong> (elige <em>Europa / Bélgica</em> y modo <em>Bloqueado</em>).</li>
+              <li>Ve a la pestaña <strong>Reglas</strong>, pega estas reglas y pulsa <strong>Publicar</strong>:</li>
+            </ol>
+            <div style="position:relative; margin-top:0.35rem">
+              <pre class="code-block" id="firebase-rules-box"></pre>
+              <button type="button" class="btn btn-xs" id="btn-copy-rules" style="position:absolute; top:6px; right:6px">Copiar reglas</button>
+            </div>
+            <p style="margin:0.45rem 0 0">4. Copia la URL superior (<code>https://...firebasedatabase.app</code>), pégala arriba, inventa un código de sala privado (ej. <code>mai-carlos-9482</code>), pulsa <strong>Probar y conectar</strong> y envía el botón <strong>Copiar enlace para mi alumno</strong> por WhatsApp.</p>
+          </details>
+        </div>
+
+        <!-- BLOQUE 2: ROL PROFESOR / ALUMNO Y PERFIL -->
+        <div class="panel-card">
+          <h3 style="margin:0 0 0.65rem; font-size:0.98rem" class="display-font">Rol en este dispositivo y perfil</h3>
+          <div class="form-grid-3" style="margin-bottom:0.65rem">
+            <div>
+              <label class="field-label" for="set-role">Rol actual</label>
+              <select id="set-role" class="select">
+                <option value="profesor">Profesor (Control total)</option>
+                <option value="alumno">Alumno</option>
+              </select>
+            </div>
+            <div>
+              <label class="field-label" for="set-student-name">Nombre del alumno</label>
+              <input id="set-student-name" class="input" type="text" placeholder="Ej. Alex" />
+            </div>
+            <div>
+              <label class="field-label" for="set-target-session">Convocatoria</label>
+              <input id="set-target-session" class="input" type="text" placeholder="Mayo 2027" />
+            </div>
+          </div>
+          <label style="display:inline-flex; align-items:center; gap:0.45rem; font-size:0.83rem; cursor:pointer; margin-bottom:0.75rem">
+            <input type="checkbox" id="set-hide-solutions" />
+            Ocultar enlaces a «Solución PDF» en Modo Alumno (ideal durante simulacros)
+          </label>
+
+          <div style="border-top:1px solid var(--border); padding-top:0.7rem">
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.35rem">
+              <span class="field-label" style="margin:0">Umbrales reales de Nota IB (1–7)</span>
+              <select id="set-curve-preset" class="select" style="width:auto; padding:0.25rem 0.5rem; font-size:0.78rem"></select>
+            </div>
             <div class="boundaries-grid" id="boundaries-inputs"></div>
           </div>
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-top:0.75rem; gap:0.5rem; flex-wrap:wrap">
-            <button type="button" class="btn btn-ghost btn-sm" id="btn-reset-boundaries">Restaurar umbrales estándar</button>
+
+          <div style="display:flex; justify-content:flex-end; margin-top:0.75rem">
             <button type="button" class="btn btn-primary btn-sm" id="btn-save-settings">Guardar ajustes</button>
           </div>
         </div>
 
+        <!-- BLOQUE 3: COPIA LOCAL JSON / CSV -->
         <div class="panel-card">
-          <h3 style="margin:0 0 0.45rem; font-size:0.93rem">Copia de seguridad y transferencia</h3>
-          <p class="muted" style="margin:0 0 0.75rem; font-size:0.82rem" id="backup-status-text">
-            Tus resultados y notas se guardan en este navegador. Exporta una copia JSON periódicamente o para mover tus datos a otro dispositivo.
-          </p>
-          <div style="display:flex; flex-wrap:wrap; gap:0.5rem; margin-bottom:0.85rem">
-            <button type="button" class="btn btn-primary btn-sm" id="btn-export-json">Exportar copia (.json)</button>
+          <h3 style="margin:0 0 0.4rem; font-size:0.98rem" class="display-font">Copia de seguridad local (JSON / CSV / PDF)</h3>
+          <p class="muted" style="margin:0 0 0.65rem; font-size:0.8rem" id="backup-status-text"></p>
+          <div style="display:flex; flex-wrap:wrap; gap:0.45rem; margin-bottom:0.75rem">
+            <button type="button" class="btn btn-sm" id="btn-export-json">Exportar copia (.json)</button>
             <button type="button" class="btn btn-sm" id="btn-export-csv">Exportar resultados (.csv)</button>
             <button type="button" class="btn btn-sm" id="btn-modal-print">Imprimir / PDF</button>
           </div>
-
-          <div style="border-top:1px solid var(--border); padding-top:0.75rem">
+          <div style="border-top:1px solid var(--border); padding-top:0.65rem">
             <label class="field-label" for="import-json-file">Importar copia de seguridad (.json)</label>
-            <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap">
-              <select id="import-mode" class="select" style="width:auto; min-width:170px">
+            <div style="display:flex; gap:0.45rem; align-items:center; flex-wrap:wrap">
+              <select id="import-mode" class="select" style="width:auto">
                 <option value="merge">Fusionar con datos actuales</option>
                 <option value="replace">Reemplazar todo</option>
               </select>
-              <input id="import-json-file" type="file" accept=".json,application/json" style="font-size:0.82rem; max-width:250px" />
+              <input id="import-json-file" type="file" accept=".json,application/json" style="font-size:0.8rem; max-width:240px" />
             </div>
           </div>
         </div>
 
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; flex-wrap:wrap; padding-top:0.25rem">
-          <button type="button" class="btn btn-danger btn-sm" id="btn-clear-all">Reiniciar todos los datos</button>
-          <button type="button" class="btn btn-sm" data-close-modal="settings-modal-backdrop">Listo</button>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem">
+          <button type="button" class="btn btn-danger btn-sm" id="btn-clear-all">Reiniciar datos locales</button>
+          <button type="button" class="btn btn-sm" data-close-modal="settings-modal-backdrop">Cerrar</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- ==================== INFORME IMPRIMIBLE (SOLO PRINT) ==================== -->
+  <!-- ==================== INFORME IMPRIMIBLE ==================== -->
   <section class="print-report" id="print-report"></section>
-
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script type="module" src="./js/app.js"></script>
