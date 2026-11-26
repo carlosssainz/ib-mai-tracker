@@ -1,17 +1,71 @@
-// Motor de sincronización en tiempo real vía Firebase Realtime Database (REST + SSE EventSource).
-// Cero dependencias externas, actualizaciones < 1 s entre Profesor y Alumno y fusión granular sin pisar cambios.
+// Motor de sincronización gratuita entre Profesor y Alumno vía Google Drive + Google Apps Script.
+// - Sin cuentas nuevas ni servicios de terceros (usa la cuenta de Google del profesor y una carpeta privada de Drive).
+// - Peticiones POST con Content-Type: text/plain;charset=utf-8 para evitar CORS preflight (OPTIONS).
+// - Polling inteligente adaptable (pausa en pestaña oculta, se acelera tras cambios, backoff ante errores).
+// - Fusión granular por marcas de tiempo + botón manual "Sincronizar ahora".
 
-export const SYNC_CONFIG_KEY = "ib_mai_firebase_cfg_v2";
+import { APPS_SCRIPT_CODE } from "./apps_script_template.js";
 
-export function normalizeFirebaseUrl(rawUrl) {
+export { APPS_SCRIPT_CODE };
+
+export const SYNC_CONFIG_KEY = "ib_mai_drive_sync_cfg_v1";
+
+export const POLL_INTERVALS = {
+  activeMs: 6000,      // 6 s cuando ha habido actividad reciente (< 2 min)
+  idleMs: 15000,       // 15 s tras 2 min sin cambios
+  deepIdleMs: 30000,   // 30 s tras 10 min sin cambios
+  maxBackoffMs: 60000, // Máximo 60 s ante cortes de red
+  debouncePushMs: 900  // Agrupa escritura rápida antes de enviar POST
+};
+
+export function normalizeScriptUrl(rawUrl) {
   if (!rawUrl || typeof rawUrl !== "string") return "";
-  let u = rawUrl.trim().replace(/\/+$/, "");
+  let u = rawUrl.trim();
   if (!u) return "";
-  if (!u.startsWith("https://")) {
+  const isLocal = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(u);
+  if (!isLocal) {
     if (u.startsWith("http://")) u = "https://" + u.slice(7);
-    else u = "https://" + u;
+    else if (!u.startsWith("https://")) u = "https://" + u;
   }
+  // Eliminar espacios o barras sobrantes al final, conservando la ruta /exec
+  u = u.split("#")[0].split("?")[0].replace(/\/+$/, "");
   return u;
+}
+
+export function validateScriptUrl(rawUrl) {
+  const url = normalizeScriptUrl(rawUrl);
+  if (!url) {
+    return { ok: false, error: "Pega la URL de tu Aplicación web de Google Apps Script." };
+  }
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, error: "La URL no tiene un formato válido." };
+  }
+  const isLocal = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+  if (isLocal) {
+    return { ok: true, url };
+  }
+  if (/\/edit$/i.test(parsed.pathname)) {
+    return {
+      ok: false,
+      error: "Has pegado el enlace del editor (/edit). Copia la URL de la Aplicación web que termina en /exec."
+    };
+  }
+  if (parsed.hostname !== "script.google.com" && !parsed.hostname.endsWith(".googleusercontent.com")) {
+    return {
+      ok: false,
+      error: "La URL debe ser una Aplicación web de Google Apps Script (https://script.google.com/macros/s/.../exec)."
+    };
+  }
+  if (!/\/exec$/i.test(parsed.pathname)) {
+    return {
+      ok: false,
+      error: "La URL de Apps Script debe terminar en /exec (cópiala desde Implementar → Aplicación web)."
+    };
+  }
+  return { ok: true, url };
 }
 
 export function sanitizeRoomCode(rawCode) {
@@ -20,42 +74,60 @@ export function sanitizeRoomCode(rawCode) {
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, "-")
     .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
     .slice(0, 48);
+}
+
+export function generateRoomCode() {
+  const chars = "abcdefghjkmnpqrstuvwxyz23456789";
+  let suffix = "";
+  for (let i = 0; i < 6; i++) {
+    suffix += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return `mai-2027-${suffix}`;
 }
 
 export function loadSyncConfig() {
   try {
     const raw = localStorage.getItem(SYNC_CONFIG_KEY);
-    if (!raw) return { enabled: false, dbUrl: "", roomCode: "", role: "profesor" };
+    if (!raw) return { enabled: false, scriptUrl: "", roomCode: "", role: "profesor" };
     const parsed = JSON.parse(raw);
+    const scriptUrl = normalizeScriptUrl(parsed.scriptUrl);
+    const roomCode = sanitizeRoomCode(parsed.roomCode);
     return {
-      enabled: Boolean(parsed.enabled && parsed.dbUrl && parsed.roomCode),
-      dbUrl: normalizeFirebaseUrl(parsed.dbUrl),
-      roomCode: sanitizeRoomCode(parsed.roomCode),
+      enabled: Boolean(parsed.enabled && scriptUrl && roomCode.length >= 3),
+      scriptUrl,
+      roomCode,
       role: parsed.role === "alumno" ? "alumno" : "profesor"
     };
   } catch {
-    return { enabled: false, dbUrl: "", roomCode: "", role: "profesor" };
+    return { enabled: false, scriptUrl: "", roomCode: "", role: "profesor" };
   }
 }
 
 export function saveSyncConfig(cfg) {
+  const scriptUrl = normalizeScriptUrl(cfg.scriptUrl);
+  const roomCode = sanitizeRoomCode(cfg.roomCode);
   const clean = {
-    enabled: Boolean(cfg.enabled && cfg.dbUrl && cfg.roomCode),
-    dbUrl: normalizeFirebaseUrl(cfg.dbUrl),
-    roomCode: sanitizeRoomCode(cfg.roomCode),
+    enabled: Boolean(cfg.enabled && scriptUrl && roomCode.length >= 3),
+    scriptUrl,
+    roomCode,
     role: cfg.role === "alumno" ? "alumno" : "profesor"
   };
   try {
     localStorage.setItem(SYNC_CONFIG_KEY, JSON.stringify(clean));
   } catch {
-    // ignore storage errors
+    // ignorar errores de almacenamiento
   }
   return clean;
 }
 
-export function encodeInviteLink(baseUrl, dbUrl, roomCode, role = "alumno") {
-  const payload = JSON.stringify({ u: normalizeFirebaseUrl(dbUrl), r: sanitizeRoomCode(roomCode) });
+export function encodeInviteLink(baseUrl, scriptUrl, roomCode, role = "alumno") {
+  const payload = JSON.stringify({
+    u: normalizeScriptUrl(scriptUrl),
+    r: sanitizeRoomCode(roomCode),
+    v: 3
+  });
   const bytes = new TextEncoder().encode(payload);
   let bin = "";
   for (const b of bytes) bin += String.fromCharCode(b);
@@ -75,26 +147,42 @@ export function parseInviteFromSearch(searchStr) {
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     const parsed = JSON.parse(new TextDecoder().decode(bytes));
-    const dbUrl = normalizeFirebaseUrl(parsed.u);
+    const scriptUrl = normalizeScriptUrl(parsed.u);
     const roomCode = sanitizeRoomCode(parsed.r);
-    if (!dbUrl || !roomCode) return null;
+    if (!scriptUrl || roomCode.length < 3) return null;
     const role = params.get("role") === "profesor" ? "profesor" : "alumno";
-    return { enabled: true, dbUrl, roomCode, role };
+    return { enabled: true, scriptUrl, roomCode, role };
   } catch {
     return null;
   }
 }
 
-// Convierte arrays de notes/activityLog a mapas por id para almacenamiento en Firebase (y viceversa)
-export function stateToRemoteMap(state) {
+// Convierte el estado local (con arrays) a un mapa por id para fusión segura en Google Drive
+export function stateToRemoteMap(state, tombstones = null) {
   const notesMap = {};
   for (const n of state.notes || []) {
     if (n && n.id) notesMap[n.id] = n;
   }
+  if (tombstones?.notes) {
+    for (const [id, dead] of Object.entries(tombstones.notes)) {
+      if (!notesMap[id] || (dead.updatedAt || "") >= (notesMap[id].updatedAt || "")) {
+        notesMap[id] = dead;
+      }
+    }
+  }
+
   const logMap = {};
   for (const l of state.activityLog || []) {
     if (l && l.id) logMap[l.id] = l;
   }
+  if (tombstones?.logs) {
+    for (const [id, dead] of Object.entries(tombstones.logs)) {
+      if (!logMap[id] || (dead.updatedAt || "") >= (logMap[id].updatedAt || "")) {
+        logMap[id] = dead;
+      }
+    }
+  }
+
   return {
     schemaVersion: state.schemaVersion || 2,
     updatedAt: state.updatedAt || new Date().toISOString(),
@@ -135,7 +223,7 @@ function pickNewer(localObj, remoteObj) {
 
 /**
  * Fusión granular sin pérdida de datos entre estado local y remoto:
- * compara timestamps a nivel de configuración compartida, examen, ejercicio individual, notas y sesiones.
+ * compara marcas de tiempo a nivel de ajustes compartidos, examen, ejercicio, notas y sesiones.
  */
 export function mergeSyncedStates(localState, remotePayload) {
   const remote = remoteMapToStateShape(remotePayload);
@@ -143,7 +231,7 @@ export function mergeSyncedStates(localState, remotePayload) {
 
   const merged = structuredClone(localState);
 
-  // Settings compartidos (respetando el tema local de cada dispositivo)
+  // Settings compartidos (conservando el tema visual local de cada dispositivo)
   const localTheme = localState.settings?.theme || "dark";
   const rSet = remote.settings || {};
   const lSet = localState.settings || {};
@@ -154,7 +242,7 @@ export function mergeSyncedStates(localState, remotePayload) {
     theme: localTheme
   };
 
-  // Exams + Exercises granulares
+  // Exámenes + ejercicios individuales
   const allExamIds = new Set([...Object.keys(localState.exams || {}), ...Object.keys(remote.exams || {})]);
   const mergedExams = {};
   for (const eid of allExamIds) {
@@ -176,7 +264,7 @@ export function mergeSyncedStates(localState, remotePayload) {
   }
   merged.exams = mergedExams;
 
-  // Notes (respeta tombstones _deleted si existieran en el mapa remoto)
+  // Notas (respetando tombstones _deleted)
   const rawRemoteNotes = remotePayload?.notesMap || {};
   const noteById = new Map();
   for (const n of localState.notes || []) if (n?.id) noteById.set(n.id, n);
@@ -194,7 +282,7 @@ export function mergeSyncedStates(localState, remotePayload) {
     (b.date || "").localeCompare(a.date || "") || (b.updatedAt || "").localeCompare(a.updatedAt || "")
   );
 
-  // Activity Log
+  // Activity Log (respetando tombstones _deleted)
   const rawRemoteLog = remotePayload?.logMap || {};
   const logById = new Map();
   for (const l of localState.activityLog || []) if (l?.id) logById.set(l.id, l);
@@ -203,7 +291,10 @@ export function mergeSyncedStates(localState, remotePayload) {
     logById.set(l.id, pickNewer(logById.get(l.id), l));
   }
   for (const [id, rl] of Object.entries(rawRemoteLog)) {
-    if (rl && rl._deleted) logById.delete(id);
+    if (rl && rl._deleted) {
+      const ll = logById.get(id);
+      if (!ll || (rl.updatedAt || "") >= (ll.updatedAt || "")) logById.delete(id);
+    }
   }
   merged.activityLog = [...logById.values()].sort((a, b) =>
     (b.date || "").localeCompare(a.date || "") || (b.updatedAt || "").localeCompare(a.updatedAt || "")
@@ -213,40 +304,156 @@ export function mergeSyncedStates(localState, remotePayload) {
   return merged;
 }
 
-export class FirebaseSyncClient {
-  constructor({ onStatus, onRemoteData }) {
-    this.onStatus = onStatus || (() => {});
-    this.onRemoteData = onRemoteData || (() => {});
-    this.config = loadSyncConfig();
-    this.eventSource = null;
-    this.reconnectTimer = null;
-    this.status = "local"; // "local" | "connecting" | "live" | "error"
-    this.clientId = `cli_${Math.random().toString(36).slice(2, 8)}`;
+function hasMeaningfulState(st) {
+  if (!st || typeof st !== "object") return false;
+  if (st.exams && Object.keys(st.exams).length > 0) return true;
+  if (Array.isArray(st.notes) && st.notes.length > 0) return true;
+  if (Array.isArray(st.activityLog) && st.activityLog.length > 0) return true;
+  if (st.settings?.studentName) return true;
+  return false;
+}
+
+function hasUnsyncedLocalItems(localState, remotePayload) {
+  if (!hasMeaningfulState(localState)) return false;
+  if (!remotePayload || typeof remotePayload !== "object") return true;
+
+  const rExams = remotePayload.exams || {};
+  for (const [eid, le] of Object.entries(localState.exams || {})) {
+    const re = rExams[eid];
+    if (!re) return true;
+    if ((le.updatedAt || "") > (re.updatedAt || "")) return true;
+    for (const [q, lex] of Object.entries(le.exercises || {})) {
+      const rex = re.exercises?.[q];
+      if (!rex || (lex.updatedAt || "") > (rex.updatedAt || "")) return true;
+    }
   }
 
-  getRoomUrl(subPath = "") {
-    const base = normalizeFirebaseUrl(this.config.dbUrl);
-    const room = sanitizeRoomCode(this.config.roomCode);
-    const suffix = subPath ? `/${subPath.replace(/^\/+/, "")}` : "";
-    return `${base}/salas/${encodeURIComponent(room)}${suffix}.json`;
+  const rNotes = remotePayload.notesMap || {};
+  for (const n of localState.notes || []) {
+    if (!n?.id) continue;
+    const rn = rNotes[n.id];
+    if (!rn || (n.updatedAt || "") > (rn.updatedAt || "")) return true;
+  }
+
+  const rLogs = remotePayload.logMap || {};
+  for (const l of localState.activityLog || []) {
+    if (!l?.id) continue;
+    const rl = rLogs[l.id];
+    if (!rl || (l.updatedAt || "") > (rl.updatedAt || "")) return true;
+  }
+
+  if ((localState.settings?.updatedAt || "") > (remotePayload.settings?.updatedAt || "")) {
+    return true;
+  }
+
+  return false;
+}
+
+export class DriveSyncClient {
+  constructor({ onStatus, onRemoteData, getState, fetchImpl } = {}) {
+    this.onStatus = onStatus || (() => {});
+    this.onRemoteData = onRemoteData || (() => {});
+    this.getState = getState || (() => null);
+    this.fetchImpl = fetchImpl || ((...args) => fetch(...args));
+
+    this.config = loadSyncConfig();
+    this.status = "local"; // "local" | "connecting" | "syncing" | "live" | "error"
+    this.lastDetail = "Solo guardado local";
+    this.clientId = `cli_${Math.random().toString(36).slice(2, 8)}`;
+
+    this.rev = -1;
+    this.lastSyncedAt = null;
+    this.lastActivityAt = Date.now();
+    this.consecutiveErrors = 0;
+
+    this.dirty = false;
+    this.inFlight = false;
+    this.pendingPushAfterFlight = false;
+    this.tombstones = { notes: {}, logs: {} };
+
+    this.pollTimer = null;
+    this.debounceTimer = null;
+    this.lifecycleBound = false;
+
+    this._onVisibility = () => this.handleVisibilityChange();
+    this._onOnline = () => this.handleOnline();
+    this._onFocus = () => this.handleFocus();
+    this._onPageHide = () => this.flushOnHide();
   }
 
   setStatus(st, detail = "") {
     this.status = st;
-    this.onStatus(st, detail);
+    this.lastDetail = detail;
+    this.onStatus(st, detail, {
+      rev: this.rev,
+      lastSyncedAt: this.lastSyncedAt,
+      dirty: this.dirty
+    });
   }
 
-  async testConnection(dbUrl, roomCode) {
-    const url = `${normalizeFirebaseUrl(dbUrl)}/salas/${encodeURIComponent(sanitizeRoomCode(roomCode))}/_ping.json`;
-    const res = await fetch(url, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ at: new Date().toISOString(), ok: true })
-    });
-    if (!res.ok) {
-      throw new Error(`Firebase respondió HTTP ${res.status}. Revisa la URL y las reglas de Realtime Database.`);
+  getNextPollDelayMs(nowMs = Date.now()) {
+    if (!this.config.enabled) return null;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return null;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return null;
+
+    if (this.consecutiveErrors > 0) {
+      return Math.min(POLL_INTERVALS.maxBackoffMs, 10000 * Math.pow(2, this.consecutiveErrors - 1));
     }
-    return true;
+
+    const idleFor = nowMs - this.lastActivityAt;
+    if (idleFor < 2 * 60 * 1000) return POLL_INTERVALS.activeMs;
+    if (idleFor < 10 * 60 * 1000) return POLL_INTERVALS.idleMs;
+    return POLL_INTERVALS.deepIdleMs;
+  }
+
+  async postTextPlain(url, payload, timeoutMs = 15000) {
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timerId = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    try {
+      const res = await this.fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify(payload),
+        redirect: "follow",
+        ...(controller ? { signal: controller.signal } : {})
+      });
+      const text = await res.text();
+      if (!res.ok) {
+        throw new Error(`Google Apps Script respondió HTTP ${res.status}. Verifica la URL /exec y los permisos.`);
+      }
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(
+          "Google devolvió HTML en lugar de JSON. Revisa que en «Implementar → Aplicación web» esté marcado «Quién tiene acceso: Cualquier persona»."
+        );
+      }
+      if (!data || data.ok === false) {
+        throw new Error(data?.error || "El script de Google Drive devolvió un error.");
+      }
+      return data;
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        throw new Error("Tiempo de espera agotado al conectar con Google Drive.");
+      }
+      throw err;
+    } finally {
+      if (timerId) clearTimeout(timerId);
+    }
+  }
+
+  async testConnection(scriptUrl, roomCode) {
+    const check = validateScriptUrl(scriptUrl);
+    if (!check.ok) throw new Error(check.error);
+    const cleanRoom = sanitizeRoomCode(roomCode);
+    if (cleanRoom.length < 3) {
+      throw new Error("El código de sala debe tener al menos 3 caracteres (ej. mai-2027-carlos).");
+    }
+    return this.postTextPlain(check.url, {
+      action: "ping",
+      room: cleanRoom
+    });
   }
 
   async connect(cfg, localState) {
@@ -256,122 +463,284 @@ export class FirebaseSyncClient {
       this.setStatus("local", "Solo guardado local");
       return null;
     }
-    this.setStatus("connecting", "Conectando con Firebase…");
+
+    this.bindLifecycle();
+    this.rev = -1;
+    this.consecutiveErrors = 0;
+    this.lastActivityAt = Date.now();
+    this.setStatus("connecting", "Conectando con Google Drive…");
+
     try {
-      const res = await fetch(this.getRoomUrl());
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const remoteData = await res.json();
-      if (!remoteData || (!remoteData.exams && !remoteData.notesMap && !remoteData.settings)) {
-        // Sala nueva: subir el estado local inicial
-        await this.pushFullState(localState);
+      const pulled = await this.postTextPlain(this.config.scriptUrl, {
+        action: "pull",
+        room: this.config.roomCode,
+        sinceRev: -1
+      });
+
+      this.rev = Number.isFinite(Number(pulled.rev)) ? Number(pulled.rev) : 0;
+      this.lastSyncedAt = pulled.updatedAt || new Date().toISOString();
+
+      const localSnap = localState || this.getState();
+      if (!pulled.data) {
+        if (hasMeaningfulState(localSnap)) {
+          await this.pushFullState(localSnap, { silent: true });
+        }
       } else {
-        this.onRemoteData(remoteData, true);
+        const needsPushBack = hasUnsyncedLocalItems(localSnap, pulled.data);
+        this.onRemoteData(pulled.data, true);
+        if (needsPushBack) {
+          const postMerge = this.getState() || localSnap;
+          await this.pushFullState(postMerge, { silent: true });
+        }
       }
-      this.openStream();
-      return remoteData;
+
+      this.setStatus("live", "Sincronizado con Drive");
+      this.scheduleNextPoll();
+      return pulled.data || null;
     } catch (err) {
-      this.setStatus("error", err.message || "Error de conexión");
+      this.consecutiveErrors++;
+      this.setStatus("error", err.message || "Error al conectar con Drive");
+      this.scheduleNextPoll();
       return null;
     }
   }
 
-  openStream() {
-    if (!this.config.enabled || typeof EventSource === "undefined") {
-      this.setStatus("live", "Conectado (sin streaming)");
-      return;
+  queueLocalMutation(subPath, payload) {
+    if (!this.config.enabled) return;
+    this.dirty = true;
+    this.lastActivityAt = Date.now();
+
+    if (typeof subPath === "string" && payload && payload._deleted) {
+      if (subPath.startsWith("notesMap/")) {
+        const id = subPath.slice("notesMap/".length);
+        this.tombstones.notes[id] = payload;
+      } else if (subPath.startsWith("logMap/")) {
+        const id = subPath.slice("logMap/".length);
+        this.tombstones.logs[id] = payload;
+      }
     }
+
+    clearTimeout(this.debounceTimer);
+    this.debounceTimer = setTimeout(() => {
+      const current = this.getState();
+      if (current) this.pushFullState(current, { silent: true });
+    }, POLL_INTERVALS.debouncePushMs);
+  }
+
+  async pushFullState(state, { silent = true } = {}) {
+    if (!this.config.enabled || !state) return null;
+    if (this.inFlight) {
+      this.pendingPushAfterFlight = true;
+      this.dirty = true;
+      return null;
+    }
+
+    clearTimeout(this.debounceTimer);
+    clearTimeout(this.pollTimer);
+    this.inFlight = true;
+    this.pendingPushAfterFlight = false;
+    this.lastActivityAt = Date.now();
+    this.setStatus("syncing", "Guardando en Drive…");
+
+    const prevRev = this.rev;
+    const payload = stateToRemoteMap(state, this.tombstones);
+
     try {
-      const es = new EventSource(this.getRoomUrl());
-      this.eventSource = es;
+      const res = await this.postTextPlain(this.config.scriptUrl, {
+        action: "push",
+        room: this.config.roomCode,
+        role: this.config.role,
+        clientId: this.clientId,
+        state: payload
+      });
 
-      es.addEventListener("put", (ev) => {
-        this.setStatus("live", "En vivo");
-        try {
-          const msg = JSON.parse(ev.data);
-          if (msg.path === "/" && msg.data) {
-            this.onRemoteData(msg.data, false);
-          } else if (msg.path && msg.path !== "/") {
-            // Re-leer snapshot limpio para aplicar merge seguro
-            this.pullOnce();
-          }
-        } catch {
-          // ignorar heartbeat
+      this.dirty = false;
+      this.consecutiveErrors = 0;
+      this.rev = Number.isFinite(Number(res.rev)) ? Number(res.rev) : prevRev + 1;
+      this.lastSyncedAt = res.updatedAt || new Date().toISOString();
+
+      // Si el servidor fusionó cambios intermedios del otro dispositivo, aplicamos la versión autoritativa
+      if (res.data && prevRev >= 0 && this.rev > prevRev + 1) {
+        this.onRemoteData(res.data, silent);
+      }
+
+      this.setStatus("live", "Sincronizado con Drive");
+      return res;
+    } catch (err) {
+      this.dirty = true;
+      this.consecutiveErrors++;
+      this.setStatus("error", err.message || "Error al guardar en Drive");
+      return null;
+    } finally {
+      this.inFlight = false;
+      if (this.pendingPushAfterFlight && this.config.enabled) {
+        this.pendingPushAfterFlight = false;
+        const latest = this.getState();
+        if (latest) {
+          this.pushFullState(latest, { silent: true });
+          return;
         }
-      });
-
-      es.addEventListener("patch", () => {
-        this.setStatus("live", "En vivo");
-        this.pullOnce();
-      });
-
-      es.onopen = () => this.setStatus("live", "En vivo");
-
-      es.onerror = () => {
-        this.setStatus("connecting", "Reconectando…");
-        es.close();
-        clearTimeout(this.reconnectTimer);
-        this.reconnectTimer = setTimeout(() => {
-          if (this.config.enabled) this.openStream();
-        }, 4000);
-      };
-    } catch {
-      this.setStatus("error", "No se pudo abrir flujo en vivo");
+      }
+      this.scheduleNextPoll();
     }
   }
 
-  async pullOnce() {
-    if (!this.config.enabled) return;
+  async pullOnce({ force = false, silent = true } = {}) {
+    if (!this.config.enabled || this.inFlight) return { ok: false, skipped: true };
+
+    if (this.dirty) {
+      const st = this.getState();
+      if (st) return this.pushFullState(st, { silent });
+    }
+
+    clearTimeout(this.pollTimer);
+    this.inFlight = true;
+    const prevRev = this.rev;
+    if (!silent) this.setStatus("syncing", "Comprobando cambios en Drive…");
+
     try {
-      const res = await fetch(this.getRoomUrl());
-      if (res.ok) {
-        const data = await res.json();
-        if (data) this.onRemoteData(data, false);
+      const res = await this.postTextPlain(this.config.scriptUrl, {
+        action: "pull",
+        room: this.config.roomCode,
+        sinceRev: force ? -1 : this.rev
+      });
+
+      this.consecutiveErrors = 0;
+      this.lastSyncedAt = new Date().toISOString();
+      const nextRev = Number.isFinite(Number(res.rev)) ? Number(res.rev) : this.rev;
+      const hasNewRevision = Boolean(res.data && nextRev !== prevRev);
+
+      this.rev = nextRev;
+      if (res.data && (hasNewRevision || force)) {
+        if (hasNewRevision) this.lastActivityAt = Date.now();
+        this.onRemoteData(res.data, !hasNewRevision || silent);
+      }
+
+      this.setStatus("live", "Sincronizado con Drive");
+      return { ok: true, changed: hasNewRevision, rev: this.rev, lastSyncedAt: this.lastSyncedAt };
+    } catch (err) {
+      this.consecutiveErrors++;
+      this.setStatus("error", err.message || "Error al consultar Drive");
+      return { ok: false, error: err.message };
+    } finally {
+      this.inFlight = false;
+      this.scheduleNextPoll();
+    }
+  }
+
+  async syncNow(stateOverride = null) {
+    if (!this.config.enabled) {
+      return { ok: false, error: "Sincronización no configurada" };
+    }
+    clearTimeout(this.debounceTimer);
+    clearTimeout(this.pollTimer);
+    this.lastActivityAt = Date.now();
+    this.consecutiveErrors = 0;
+
+    if (this.dirty) {
+      const st = stateOverride || this.getState();
+      const res = await this.pushFullState(st, { silent: false });
+      return res
+        ? { ok: true, pushed: true, rev: this.rev, lastSyncedAt: this.lastSyncedAt }
+        : { ok: false, error: this.lastDetail };
+    }
+
+    return this.pullOnce({ force: true, silent: false });
+  }
+
+  scheduleNextPoll() {
+    clearTimeout(this.pollTimer);
+    const delay = this.getNextPollDelayMs();
+    if (delay === null) return;
+    this.pollTimer = setTimeout(() => {
+      if (this.config.enabled && !this.inFlight) {
+        this.pullOnce({ force: false, silent: false });
+      }
+    }, delay);
+  }
+
+  handleVisibilityChange() {
+    if (!this.config.enabled) return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+      clearTimeout(this.pollTimer);
+      this.flushOnHide();
+    } else {
+      this.lastActivityAt = Date.now();
+      this.pullOnce({ force: false, silent: true });
+    }
+  }
+
+  handleFocus() {
+    if (!this.config.enabled) return;
+    const sinceSync = this.lastSyncedAt ? Date.now() - new Date(this.lastSyncedAt).getTime() : Infinity;
+    if (sinceSync > POLL_INTERVALS.activeMs) {
+      this.lastActivityAt = Date.now();
+      this.pullOnce({ force: false, silent: true });
+    }
+  }
+
+  handleOnline() {
+    if (!this.config.enabled) return;
+    this.consecutiveErrors = 0;
+    this.lastActivityAt = Date.now();
+    this.syncNow();
+  }
+
+  flushOnHide() {
+    if (!this.config.enabled || !this.dirty) return;
+    const st = this.getState();
+    if (!st) return;
+    try {
+      if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+        const body = JSON.stringify({
+          action: "push",
+          room: this.config.roomCode,
+          role: this.config.role,
+          clientId: this.clientId,
+          state: stateToRemoteMap(st, this.tombstones)
+        });
+        const blob = new Blob([body], { type: "text/plain;charset=utf-8" });
+        if (navigator.sendBeacon(this.config.scriptUrl, blob)) {
+          this.dirty = false;
+        }
       }
     } catch {
-      // silencioso
+      // ignorar si el navegador cancela el envío al cerrar
     }
   }
 
-  async pushFullState(state) {
-    if (!this.config.enabled) return;
-    const payload = stateToRemoteMap(state);
-    const res = await fetch(this.getRoomUrl(), {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-    if (!res.ok) throw new Error(`Error al guardar en Firebase (HTTP ${res.status})`);
+  bindLifecycle() {
+    if (this.lifecycleBound || typeof window === "undefined") return;
+    this.lifecycleBound = true;
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", this._onVisibility);
+    }
+    window.addEventListener("online", this._onOnline);
+    window.addEventListener("focus", this._onFocus);
+    window.addEventListener("pagehide", this._onPageHide);
   }
 
-  async patchPath(subPath, data) {
-    if (!this.config.enabled) return;
-    try {
-      await fetch(this.getRoomUrl(subPath), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data)
-      });
-    } catch {
-      this.setStatus("connecting", "Pendiente de reconexión…");
+  unbindLifecycle() {
+    if (!this.lifecycleBound || typeof window === "undefined") return;
+    this.lifecycleBound = false;
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", this._onVisibility);
     }
+    window.removeEventListener("online", this._onOnline);
+    window.removeEventListener("focus", this._onFocus);
+    window.removeEventListener("pagehide", this._onPageHide);
   }
 
   disconnect() {
-    clearTimeout(this.reconnectTimer);
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
-    }
+    clearTimeout(this.pollTimer);
+    clearTimeout(this.debounceTimer);
+    this.pollTimer = null;
+    this.debounceTimer = null;
+    this.inFlight = false;
+    this.pendingPushAfterFlight = false;
+    this.dirty = false;
+    this.rev = -1;
+    this.consecutiveErrors = 0;
+    this.unbindLifecycle();
   }
 }
-
-export const FIREBASE_RULES_SNIPPET = `{
-  "rules": {
-    "salas": {
-      "$salaId": {
-        ".read": true,
-        ".write": true
-      }
-    }
-  }
-}`;

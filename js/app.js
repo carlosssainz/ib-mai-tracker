@@ -22,6 +22,7 @@ import {
   IB_MISTAKES,
   IB_MISTAKE_MAP,
   suggestScoreFromMistakes,
+  getIBGradeDescription,
   formatDurationCompact,
   normalizeBoundaries
 } from "./ib_grading.js";
@@ -29,10 +30,12 @@ import {
 import { PracticeTimer } from "./timer.js";
 
 import {
-  FirebaseSyncClient,
-  FIREBASE_RULES_SNIPPET,
+  DriveSyncClient,
+  APPS_SCRIPT_CODE,
   loadSyncConfig,
   saveSyncConfig,
+  validateScriptUrl,
+  generateRoomCode,
   encodeInviteLink,
   parseInviteFromSearch,
   mergeSyncedStates
@@ -89,6 +92,7 @@ let openExamId = null;
 let hideOutInDrawer = true;
 let bankPageLimit = 60;
 let toastTimer = null;
+const expandedMistakeRows = new Set();
 
 const filters = {
   category: "all",
@@ -125,7 +129,7 @@ function showToast(msg) {
   el.textContent = msg;
   el.classList.add("is-visible");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove("is-visible"), 2600);
+  toastTimer = setTimeout(() => el.classList.remove("is-visible"), 2800);
 }
 
 function formatDateES(iso) {
@@ -136,8 +140,19 @@ function formatDateES(iso) {
   return `${Number(parts[2])} ${months[Number(parts[1]) - 1] || parts[1]} ${parts[0]}`;
 }
 
+function formatClockTime(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
 function roleLabel(role) {
-  return role === "alumno" ? "Alumno" : "Prof.";
+  return role === "alumno" ? "Alumno" : "Profesor";
 }
 
 function canSeeSolutions() {
@@ -151,50 +166,145 @@ function gradeBadgeClass(grade) {
   return "ib-badge--low";
 }
 
-function statusTagClass(status) {
-  if (status === "completado") return "tag--sol";
-  if (status === "en-progreso") return "tag--info";
-  if (status === "repasar") return "tag--warn";
+function statusPillClass(status) {
+  if (status === "completado") return "pill-subtle--good";
+  if (status === "en-progreso") return "pill-subtle--info";
+  if (status === "repasar") return "pill-subtle--warn";
   return "";
 }
 
 /* ==========================================================================
-   Firebase Real-Time Sync Setup
+   Google Drive + Apps Script Sync Setup (sin cuentas nuevas)
    ========================================================================== */
 
-const syncClient = new FirebaseSyncClient({
-  onStatus: (st, detail) => {
-    const pill = document.getElementById("btn-sync-pill");
-    const txt = document.getElementById("sync-pill-text");
-    const modalBadge = document.getElementById("sync-modal-badge");
-    if (pill && txt) {
-      pill.classList.toggle("status-chip--live", st === "live");
-      txt.textContent = st === "live" ? "En vivo" : st === "connecting" ? "Conectando" : st === "error" ? "Error sync" : "Local";
-      pill.title = detail || txt.textContent;
+function updateSyncUI(st, detail, meta = {}) {
+  const pill = document.getElementById("btn-sync-pill");
+  const txt = document.getElementById("sync-pill-text");
+  const topNowBtn = document.getElementById("btn-sync-now-top");
+  const modalNowBtn = document.getElementById("btn-sync-now-modal");
+  const modalDot = document.getElementById("sync-modal-dot");
+  const modalTitle = document.getElementById("sync-modal-title");
+  const modalBadge = document.getElementById("sync-modal-badge");
+  const modalSub = document.getElementById("sync-modal-sub");
+  const discBtn = document.getElementById("btn-sync-disconnect");
+
+  const isSpinning = st === "connecting" || st === "syncing";
+  const isLive = st === "live";
+  const isErr = st === "error";
+  const enabled = Boolean(syncConfig.enabled);
+
+  if (pill && txt) {
+    pill.classList.toggle("pill-chip--live", isLive || isSpinning);
+    pill.classList.toggle("pill-chip--error", isErr);
+    txt.textContent = !enabled
+      ? "Sync Drive"
+      : isSpinning
+        ? "Sincronizando…"
+        : isLive
+          ? "Drive · Activo"
+          : isErr
+            ? "Error Drive"
+            : "Sync Drive";
+    const timeStr = meta.lastSyncedAt ? ` · Última: ${formatClockTime(meta.lastSyncedAt)}` : "";
+    pill.title = `${detail || txt.textContent}${timeStr}`;
+  }
+
+  if (topNowBtn) {
+    topNowBtn.hidden = !enabled;
+    topNowBtn.classList.toggle("is-spinning", isSpinning);
+    topNowBtn.disabled = isSpinning;
+  }
+
+  if (modalNowBtn) {
+    modalNowBtn.classList.toggle("is-spinning", isSpinning);
+    modalNowBtn.disabled = isSpinning;
+  }
+
+  if (modalDot) {
+    modalDot.className = `status-dot-lg ${isLive || isSpinning ? "status-dot-lg--live" : isErr ? "status-dot-lg--error" : ""}`;
+  }
+
+  if (modalTitle) {
+    modalTitle.textContent = !enabled
+      ? "Solo guardado local"
+      : isLive
+        ? "Conectado con tu Google Drive"
+        : isSpinning
+          ? "Sincronizando con Google Drive…"
+          : "Revisa la conexión con Drive";
+  }
+
+  if (modalBadge) {
+    if (!enabled) {
+      modalBadge.textContent = "Sin configurar";
+      modalBadge.className = "pill-subtle";
+    } else if (isLive) {
+      modalBadge.textContent = `Sala: ${syncConfig.roomCode}`;
+      modalBadge.className = "pill-subtle pill-subtle--good";
+    } else if (isSpinning) {
+      modalBadge.textContent = "Sincronizando…";
+      modalBadge.className = "pill-subtle pill-subtle--info";
+    } else {
+      modalBadge.textContent = "Error de conexión";
+      modalBadge.className = "pill-subtle pill-subtle--bad";
     }
-    if (modalBadge) {
-      modalBadge.textContent = st === "live" ? `En vivo · sala ${syncConfig.roomCode}` : detail || "Solo local";
-      modalBadge.className = `tag ${st === "live" ? "tag--sol" : st === "error" ? "tag--bad" : "tag--info"}`;
+  }
+
+  if (modalSub) {
+    if (!enabled) {
+      modalSub.textContent =
+        "Sincroniza gratis entre tu ordenador y tu alumno usando tu propio Google Drive (carpeta privada aparte de EXÁMENES EST MATEMATICOS).";
+    } else if (isErr) {
+      modalSub.textContent = detail || "No se pudo contactar con el script de Google Drive.";
+    } else {
+      const clock = meta.lastSyncedAt ? `Última sincronización: ${formatClockTime(meta.lastSyncedAt)}. ` : "";
+      modalSub.textContent = `${clock}Polling inteligente activo: se actualiza solo cuando la pestaña está abierta y guarda tus cambios sin pisarse.`;
     }
-  },
-  onRemoteData: (remoteData, isInitial) => {
+  }
+
+  if (discBtn) {
+    discBtn.hidden = !enabled;
+  }
+}
+
+const syncClient = new DriveSyncClient({
+  getState: () => state,
+  onStatus: (st, detail, meta) => updateSyncUI(st, detail, meta),
+  onRemoteData: (remoteData, isSilent) => {
     const merged = sanitizeState(mergeSyncedStates(state, remoteData));
     state = merged;
     saveState(state);
-    // Avoid disrupting active text input typing: refresh list views safely
     const activeTag = document.activeElement?.tagName;
     const isTyping = activeTag === "INPUT" || activeTag === "TEXTAREA";
     renderAll();
     if (openExamId && !isTyping) renderExamDrawer();
-    if (!isInitial) showToast("Actualizado en vivo");
+    if (!isSilent) showToast("Actualizado desde Google Drive");
   }
 });
 
 setMutationHook((subPath, payload) => {
   if (syncClient.config.enabled) {
-    syncClient.patchPath(subPath, payload);
+    syncClient.queueLocalMutation(subPath, payload);
   }
 });
+
+async function handleSyncNow() {
+  if (!syncConfig.enabled) {
+    openSettingsModal("sync");
+    showToast("Configura primero tu URL de Google Apps Script en el paso 4");
+    return;
+  }
+  const res = await syncClient.syncNow(state);
+  if (!res || !res.ok) {
+    showToast(res?.error || "No se pudo sincronizar con Google Drive");
+  } else if (res.pushed) {
+    showToast("Cambios guardados en Google Drive ✓");
+  } else if (res.changed) {
+    showToast("Nuevos cambios traídos desde Drive ✓");
+  } else {
+    showToast("Todo está al día ✓");
+  }
+}
 
 /* ==========================================================================
    Exercise & Mock Timer HUD
@@ -264,23 +374,26 @@ function startExamMockTimer(examId) {
 }
 
 /* ==========================================================================
-   Top HUD: Countdowns + MAI 2026 Coverage
+   Unified Overview Bar: Countdowns + MAI 2026 Coverage
    ========================================================================== */
 
 function computeCountdownDisplay(targetDateStr) {
-  if (!targetDateStr) return { big: "—", sub: "Sin fecha" };
+  if (!targetDateStr) return { num: "—", unit: "", sub: "Sin fecha" };
   const now = new Date();
   const target = new Date(`${targetDateStr}T09:00:00`);
   const diffMs = target.getTime() - now.getTime();
   if (diffMs <= 0) {
     const daysPast = Math.floor(Math.abs(diffMs) / 86400000);
-    return daysPast === 0 ? { big: "¡HOY!", sub: "Día de examen" } : { big: "PASADO", sub: `Hace ${daysPast} d` };
+    return daysPast === 0
+      ? { num: "¡HOY!", unit: "", sub: "Día de examen" }
+      : { num: "PASADO", unit: "", sub: `Hace ${daysPast} d` };
   }
   const days = Math.floor(diffMs / 86400000);
   const hours = Math.floor((diffMs % 86400000) / 3600000);
   return {
-    big: `${days} DÍAS`,
-    sub: days < 45 ? `y ${hours} h · ${formatDateES(targetDateStr)}` : `${Math.round(days / 7)} semanas · ${formatDateES(targetDateStr)}`
+    num: String(days),
+    unit: days === 1 ? "día" : "días",
+    sub: days < 45 ? `${formatDateES(targetDateStr)} · ${hours} h` : `${formatDateES(targetDateStr)} · ${Math.round(days / 7)} sem.`
   };
 }
 
@@ -292,40 +405,38 @@ function renderHudStrip() {
   const covPct = stats.vistoTotal > 0 ? Math.round((stats.vistoDone / stats.vistoTotal) * 100) : 0;
 
   document.getElementById("hud-strip").innerHTML = `
-    <div class="hud-card hud-card--mock">
-      <div class="hud-top">
-        <span class="hud-kicker">${esc(cd.mock?.label || "Simulacro Colegio")}</span>
-        <button type="button" class="btn btn-ghost btn-xs" data-edit-cd="1" title="Editar fechas de contadores">✎ Editar</button>
+    <div class="ov-segment">
+      <div class="ov-head">
+        <span class="ov-kicker"><i class="ov-dot ov-dot--mock"></i>${esc(cd.mock?.label || "Simulacro Colegio")}</span>
+        <button type="button" class="btn btn-ghost btn-xs" data-edit-cd="1" title="Editar fechas de contadores">Editar</button>
       </div>
-      <div class="hud-main-row">
-        <span class="hud-big-num tabular">${esc(mockDisp.big)}</span>
-        <span class="hud-sub tabular">${esc(mockDisp.sub)}</span>
+      <div class="ov-value-row">
+        <span class="ov-num tabular">${esc(mockDisp.num)} <span class="ov-num-unit">${esc(mockDisp.unit)}</span></span>
+        <span class="ov-detail tabular">${esc(cd.mock?.detail || mockDisp.sub)}</span>
       </div>
-      <div class="muted" style="font-size:0.75rem">${esc(cd.mock?.detail || "")}</div>
     </div>
 
-    <div class="hud-card hud-card--official">
-      <div class="hud-top">
-        <span class="hud-kicker">${esc(cd.official?.label || "Examen Oficial IB")}</span>
-        <button type="button" class="btn btn-ghost btn-xs" data-edit-cd="1" title="Editar fechas de contadores">✎ Editar</button>
+    <div class="ov-segment">
+      <div class="ov-head">
+        <span class="ov-kicker"><i class="ov-dot ov-dot--official"></i>${esc(cd.official?.label || "Examen Oficial IB")}</span>
+        <span class="ov-detail tabular" style="white-space:nowrap">${esc(formatDateES(cd.official?.date))}</span>
       </div>
-      <div class="hud-main-row">
-        <span class="hud-big-num tabular">${esc(offDisp.big)}</span>
-        <span class="hud-sub tabular">${esc(offDisp.sub)}</span>
+      <div class="ov-value-row">
+        <span class="ov-num tabular">${esc(offDisp.num)} <span class="ov-num-unit">${esc(offDisp.unit)}</span></span>
+        <span class="ov-detail">${esc(cd.official?.detail || offDisp.sub)}</span>
       </div>
-      <div class="muted" style="font-size:0.75rem">${esc(cd.official?.detail || "")}</div>
     </div>
 
-    <div class="hud-card hud-card--coverage">
-      <div class="hud-top">
-        <span class="hud-kicker">Objetivo · Cobertura Temario MAI 2026</span>
-        <button type="button" class="btn btn-ghost btn-xs" id="btn-hud-jump-bank">Ir a Por Temas →</button>
+    <div class="ov-segment">
+      <div class="ov-head">
+        <span class="ov-kicker"><i class="ov-dot ov-dot--coverage"></i>Cobertura temario visto (MAI 2026)</span>
+        <button type="button" class="btn btn-ghost btn-xs" id="btn-hud-jump-bank">Por Temas →</button>
       </div>
-      <div class="hud-main-row">
-        <span class="hud-big-num tabular">${stats.vistoDone} <span class="muted" style="font-size:1.05rem">/ ${stats.vistoTotal}</span></span>
-        <span class="hud-sub tabular"><strong>${covPct}%</strong> de lo ya visto · ${stats.maiDone}/${stats.maiTotal} total MAI</span>
+      <div class="ov-value-row">
+        <span class="ov-num tabular">${stats.vistoDone} <span class="ov-num-unit">/ ${stats.vistoTotal}</span></span>
+        <span class="ov-detail tabular"><strong>${covPct}%</strong> visto · ${stats.maiDone}/${stats.maiTotal} total MAI</span>
       </div>
-      <div class="stat-bar"><div class="stat-bar-fill" style="width:${covPct}%"></div></div>
+      <div class="ov-bar-track"><div class="ov-bar-fill" style="width:${covPct}%"></div></div>
     </div>
   `;
 
@@ -346,16 +457,16 @@ function applyTheme() {
   const btn = document.getElementById("btn-toggle-theme");
   if (btn) {
     btn.textContent = theme === "dark" ? "☀" : "☾";
-    btn.title = theme === "dark" ? "Cambiar a Vice Daylight (claro)" : "Cambiar a Leonida Night (oscuro GTA VI)";
+    btn.title = theme === "dark" ? "Cambiar a Vice Daylight (claro)" : "Cambiar a Leonida Night (oscuro)";
   }
 }
 
 function updateBrandAndBadges() {
   const stats = getGlobalStats(state);
   const sub = document.getElementById("brand-subtitle");
-  const pieces = ["MAI Nivel Medio · Temario 2026"];
-  if (state.settings.studentName) pieces.unshift(`Alumno: ${state.settings.studentName}`);
-  sub.textContent = pieces.join(" · ");
+  sub.textContent = state.settings.studentName
+    ? `${state.settings.studentName} · MAI NM 2026`
+    : "MAI Nivel Medio · 2026";
 
   document.getElementById("badge-exams").textContent = `${stats.examsWorked}/${stats.examsTotal}`;
   const bankMaiCount = getAllCatalogExercises(state).filter((x) => x.mai2026 === "in").length;
@@ -373,7 +484,7 @@ function updateBrandAndBadges() {
   if (roleBtn) {
     const isAlumno = syncConfig.role === "alumno";
     roleBtn.textContent = isAlumno ? "Alumno" : "Profesor";
-    roleBtn.className = `status-chip ${isAlumno ? "status-chip--role-alumno" : "status-chip--role-prof"}`;
+    roleBtn.className = `pill-chip ${isAlumno ? "pill-chip--role-alumno" : "pill-chip--role-prof"}`;
   }
 }
 
@@ -382,13 +493,13 @@ function renderKPIs() {
   const avgGradeText = s.avgIbGrade !== null ? `IB ${s.avgIbGrade}` : "—";
   const avgPctText = s.avgPercent !== null ? `${s.avgPercent}% de media` : "Puntúa ejercicios del 1 al 10";
   const topErr = s.topMistakes[0]
-    ? `Fallo nº 1: ${s.topMistakes[0].short} (${s.topMistakes[0].count}×)`
-    : "Sin fallos marcados aún";
+    ? `Más común: ${s.topMistakes[0].short} (${s.topMistakes[0].count}×)`
+    : "Sin fallos marcados";
 
   document.getElementById("kpi-strip").innerHTML = `
     <div class="kpi-card">
       <div class="kpi-label">Exámenes iniciados</div>
-      <div class="kpi-value tabular">${s.examsWorked} <span class="muted" style="font-size:1.05rem">/ ${s.examsTotal}</span></div>
+      <div class="kpi-value tabular">${s.examsWorked} <span class="ov-num-unit">/ ${s.examsTotal}</span></div>
       <div class="kpi-sub">${s.examsCompleted} completado${s.examsCompleted === 1 ? "" : "s"}</div>
     </div>
     <div class="kpi-card">
@@ -402,7 +513,7 @@ function renderKPIs() {
       <div class="kpi-sub">${avgPctText}</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">Repaso y errores IB</div>
+      <div class="kpi-label">Cola de repaso</div>
       <div class="kpi-value tabular">${s.reviewQueueCount}</div>
       <div class="kpi-sub">${esc(topErr)}</div>
     </div>
@@ -410,7 +521,7 @@ function renderKPIs() {
 }
 
 /* ==========================================================================
-   View 1: Exámenes Catalog
+   View 1: Exámenes Catalog (limpio, sin sobrecarga de etiquetas)
    ========================================================================== */
 
 function renderCategoryPills() {
@@ -423,10 +534,10 @@ function renderCategoryPills() {
   };
   const defs = [
     { id: "all", label: "Todos" },
-    { id: "mai-2021", label: "01 · MAI NM (2021)" },
-    { id: "con-solucion", label: "02 · Con Soluciones (2015–2018)" },
-    { id: "solo-enunciado", label: "03 · Solo Enunciados (2000–2016)" },
-    { id: "retos-otros", label: "04 · Retos / Otros (2020)" }
+    { id: "mai-2021", label: "MAI NM 2021" },
+    { id: "con-solucion", label: "Con soluciones (2015–18)" },
+    { id: "solo-enunciado", label: "Solo enunciados (2000–16)" },
+    { id: "retos-otros", label: "Retos / Otros" }
   ];
   document.getElementById("category-pills").innerHTML = defs.map((d) => `
     <button type="button" class="pill ${filters.category === d.id ? "is-active" : ""}" data-cat="${d.id}">
@@ -445,17 +556,18 @@ function renderExtraResources() {
   const g = EXTRA_RESOURCES[0];
   const guideItems = EXERCISE_CATALOG["guia-funciones-derivadas"] || [];
   const guideIn = guideItems.filter((x) => x.mai2026 === "in").length;
-  const guideOut = guideItems.length - guideIn;
   host.innerHTML = `
     <div class="resource-strip">
-      <div style="display:flex; align-items:center; gap:0.55rem; flex-wrap:wrap">
-        <span class="tag tag--info">Guía TI-84</span>
-        <strong>${esc(g.title)}</strong>
-        <span class="muted">${guideItems.length} problemas clasificados (${guideIn} MAI 2026 · ${guideOut} fuera de temario)</span>
+      <div class="resource-strip-main">
+        <span class="pill-subtle pill-subtle--info">Guía TI-84</span>
+        <div>
+          <strong>${esc(g.title)}</strong>
+          <span class="muted"> · ${guideItems.length} problemas (${guideIn} de MAI 2026)</span>
+        </div>
       </div>
-      <div style="display:flex; gap:0.35rem">
+      <div class="btn-row">
         <button type="button" class="btn btn-soft btn-sm" id="btn-open-guide-drawer">Registrar ejercicios</button>
-        <a class="btn btn-cyan btn-sm" href="${esc(g.url)}" target="_blank" rel="noopener">Abrir PDF ↗</a>
+        <a class="btn btn-ghost btn-sm" href="${esc(g.url)}" target="_blank" rel="noopener">Abrir PDF ↗</a>
       </div>
     </div>
   `;
@@ -503,7 +615,7 @@ function renderExamList() {
 
   const host = document.getElementById("exam-list");
   if (items.length === 0) {
-    host.innerHTML = `<div class="empty-state"><strong>No hay exámenes con estos filtros.</strong><p style="margin:0.35rem 0 0; font-size:0.82rem">Prueba a cambiar el subtema o limpiar la búsqueda.</p></div>`;
+    host.innerHTML = `<div class="empty-state"><strong>No hay exámenes con estos filtros.</strong><p class="chart-empty-sub">Prueba a cambiar el subtema o limpiar la búsqueda.</p></div>`;
     return;
   }
 
@@ -514,17 +626,29 @@ function renderExamList() {
     const pFail = (derived.falladoCount / denom) * 100;
     const statusObj = EXAM_STATUS_MAP[derived.status] || EXAM_STATUSES[0];
 
-    const subjectTag = def.subject === "MAI NM"
-      ? `<span class="tag tag--mai">MAI NM · Actual</span>`
-      : def.subject === "Matemáticas NM"
-        ? `<span class="tag tag--warn">Mat. NM${def.calculator ? "" : " · Sin calc."}</span>`
-        : `<span class="tag">Estudios NM</span>`;
+    // Máximo 1 etiqueta discreta junto al título; el resto va en línea tipográfica limpia
+    const primaryBadge = derived.status !== "pendiente"
+      ? `<span class="pill-subtle ${statusPillClass(derived.status)}">${esc(statusObj.label)}</span>`
+      : def.subject === "MAI NM"
+        ? `<span class="pill-subtle pill-subtle--mai">MAI NM</span>`
+        : "";
 
-    const maiChip = derived.maiInCount === 0
-      ? `<span class="tag tag--out">0/${derived.totalQuestions} MAI 2026</span>`
+    const subjectText = def.subject === "Matemáticas NM" && !def.calculator
+      ? "Mat. NM (sin calc.)"
+      : def.subject;
+
+    const maiSummary = derived.maiInCount === 0
+      ? `0/${derived.totalQuestions} MAI 2026`
       : derived.maiOutCount > 0
-        ? `<span class="tag tag--info">${derived.maiInCount}/${derived.totalQuestions} MAI 2026</span>`
-        : `<span class="tag tag--info">100% MAI 2026</span>`;
+        ? `${derived.maiInCount}/${derived.totalQuestions} MAI 2026`
+        : "100% MAI 2026";
+
+    const metaParts = [
+      esc(subjectText),
+      esc(maiSummary),
+      def.hasSolution ? `<span><i class="meta-dot meta-dot--good"></i>Con solución</span>` : null,
+      derived.lastPracticed ? esc(formatDateES(derived.lastPracticed)) : null
+    ].filter(Boolean);
 
     const topSubs = derived.subtopics
       .filter((id) => SUBTOPIC_MAP[id]?.mai2026)
@@ -542,27 +666,22 @@ function renderExamList() {
           : "Sin nota";
     const scoreSecondary = effPct !== null
       ? `${effPct}%${derived.isProjectedOnly ? " proy." : ""}`
-      : `Máx. ${derived.maxMarks} pts`;
+      : `${derived.maxMarks} pts máx.`;
 
     return `
       <article class="exam-row" data-exam-id="${esc(def.id)}" tabindex="0" role="button">
         <div>
           <div class="exam-title-line">
             <span class="exam-title">${esc(def.year)} ${esc(def.session)} · Prueba ${def.paper}</span>
-            ${subjectTag}
-            ${maiChip}
-            ${def.hasSolution ? `<span class="tag tag--sol">Con solución</span>` : ""}
-            ${derived.status !== "pendiente" ? `<span class="tag ${statusTagClass(derived.status)}">${esc(statusObj.label)}</span>` : ""}
+            ${primaryBadge}
           </div>
-          <div class="exam-sub">
-            <span>${esc(topSubs || def.folderLabel)}</span>
-            ${derived.lastPracticed ? `<span>· ${esc(formatDateES(derived.lastPracticed))}</span>` : ""}
-          </div>
+          <div class="meta-line exam-meta-sub">${metaParts.join(`<span class="meta-sep">·</span>`)}</div>
+          ${topSubs ? `<div class="exam-topics-line">${esc(topSubs)}</div>` : ""}
         </div>
 
         <div class="exam-progress-col">
           <div class="mini-progress-label tabular">
-            <span>Ejercicios: <strong>${derived.doneCount}/${derived.totalQuestions}</strong></span>
+            <span><strong>${derived.doneCount}</strong> / ${derived.totalQuestions} ej.</span>
             <span class="muted">${derived.bienCount ? `${derived.bienCount}✓` : ""} ${derived.repasarCount ? `${derived.repasarCount}!` : ""} ${derived.falladoCount ? `${derived.falladoCount}✕` : ""}</span>
           </div>
           <div class="mini-bar">
@@ -575,7 +694,7 @@ function renderExamList() {
         <div class="exam-result-col tabular">
           <div class="result-nums">
             <span class="result-score">${esc(scorePrimary)}</span>
-            <span class="muted" style="font-size:0.75rem">${esc(scoreSecondary)}</span>
+            <span class="muted" style="font-size:0.76rem">${esc(scoreSecondary)}</span>
           </div>
           <div class="ib-badge ${gradeBadgeClass(derived.ibGrade)}" title="${derived.ibGrade ? `Nota IB ${derived.ibGrade}` : "Sin nota"}">
             ${derived.ibGrade ?? "—"}
@@ -583,10 +702,10 @@ function renderExamList() {
         </div>
 
         <div class="exam-actions-col" data-stop-row="true">
-          <a class="btn btn-sm" href="${esc(def.enunciadoUrl)}" target="_blank" rel="noopener">Enunciado ↗</a>
+          <a class="btn btn-ghost btn-sm" href="${esc(def.enunciadoUrl)}" target="_blank" rel="noopener">Enunciado ↗</a>
           ${def.solucionUrl && showSol
             ? `<a class="btn btn-good btn-sm" href="${esc(def.solucionUrl)}" target="_blank" rel="noopener">Solución ↗</a>`
-            : `<button type="button" class="btn btn-soft btn-sm" data-open-btn="${esc(def.id)}">Practicar</button>`}
+            : `<button type="button" class="btn btn-soft btn-sm" data-open-btn="${esc(def.id)}">Abrir</button>`}
         </div>
       </article>
     `;
@@ -632,13 +751,13 @@ function renderBankView() {
   const filtered = getFilteredBankExercises();
   const doneInFilter = filtered.filter((x) => x.status !== "pendiente").length;
   document.getElementById("bank-count").textContent =
-    `Mostrando ${Math.min(bankPageLimit, filtered.length)} de ${filtered.length} ejercicios (${doneInFilter} hechos en este filtro)`;
+    `Mostrando ${Math.min(bankPageLimit, filtered.length)} de ${filtered.length} ejercicios (${doneInFilter} practicados)`;
 
   const host = document.getElementById("bank-list");
   const loadWrap = document.getElementById("bank-load-more-wrap");
 
   if (filtered.length === 0) {
-    host.innerHTML = `<div class="empty-state"><strong>Ningún ejercicio coincide con estos filtros.</strong><p style="margin:0.35rem 0 0; font-size:0.82rem">Prueba a cambiar el alcance a «Todo MAI NM 2026» o limpiar la búsqueda.</p></div>`;
+    host.innerHTML = `<div class="empty-state"><strong>Ningún ejercicio coincide con estos filtros.</strong><p class="chart-empty-sub">Prueba a cambiar el alcance a «Todo MAI NM 2026» o limpiar la búsqueda.</p></div>`;
     loadWrap.innerHTML = "";
     return;
   }
@@ -652,56 +771,58 @@ function renderBankView() {
       : ex.status !== "pendiente"
         ? `bank-row--${ex.status}`
         : "";
-    const subTags = ex.subtopics.map((id) => {
-      const s = SUBTOPIC_MAP[id];
-      const cls = !s?.mai2026 ? "tag--out" : ex.syllabusFit === "proximo" ? "tag--warn" : "tag--info";
-      return `<span class="tag ${cls}">${esc(s ? s.label : id)}</span>`;
-    }).join("");
 
-    const fitTag = ex.mai2026 === "out"
-      ? `<span class="tag tag--out" title="${esc(ex.outReason || "")}">Fuera MAI 2026</span>`
-      : ex.syllabusFit === "proximo"
-        ? `<span class="tag tag--warn">Próximo tema</span>`
-        : "";
-
-    const timeTag = ex.timeSpentSec > 0
-      ? `<span class="tag tag--sol mono">⏱ ${formatDurationCompact(ex.timeSpentSec)}</span>`
+    const primarySubId = ex.subtopics[0];
+    const primarySubObj = primarySubId ? SUBTOPIC_MAP[primarySubId] : null;
+    const topicPill = primarySubObj
+      ? `<span class="pill-subtle ${!primarySubObj.mai2026 ? "pill-subtle--out" : ex.syllabusFit === "proximo" ? "pill-subtle--warn" : "pill-subtle--info"}">${esc(primarySubObj.label)}</span>`
       : "";
 
+    const extraSubs = ex.subtopics.slice(1).map((id) => SUBTOPIC_MAP[id]?.label).filter(Boolean).join(", ");
+
+    const metaBits = [
+      `<span class="mono">${ex.marks} pts · ${ex.optimalMin} min</span>`,
+      extraSubs ? esc(extraSubs) : null,
+      ex.examDef.hasSolution ? `<span><i class="meta-dot meta-dot--good"></i>Con solución</span>` : null,
+      ex.timeSpentSec > 0 ? `<span class="mono">⏱ ${formatDurationCompact(ex.timeSpentSec)}</span>` : null,
+      ex.mai2026 === "out" ? `<span>Fuera MAI 2026</span>` : null
+    ].filter(Boolean);
+
     return `
-      <div class="bank-row ${rowCls}">
+      <article class="bank-row ${rowCls}">
         <div>
-          <div style="display:flex; align-items:center; gap:0.4rem; flex-wrap:wrap">
-            <strong class="display-font" style="font-size:1rem">${esc(ex.examDef.shortTitle)} · Ej. ${ex.q}</strong>
-            <span class="tag mono">${ex.marks} pts · ${ex.optimalMin} min</span>
-            ${subTags}
-            ${fitTag}
-            ${ex.examDef.hasSolution ? `<span class="tag tag--sol">Sol.</span>` : ""}
-            ${timeTag}
+          <div class="bank-row-top">
+            <div class="bank-row-head">
+              <span class="bank-ref">${esc(ex.examDef.shortTitle)} · Ej. ${ex.q}</span>
+              ${topicPill}
+            </div>
+            <div class="meta-line">${metaBits.join(`<span class="meta-sep">·</span>`)}</div>
           </div>
           <div class="bank-q-title">${esc(ex.title)}</div>
-          ${ex.note ? `<div class="muted" style="font-size:0.76rem; margin-top:0.18rem">Nota: ${esc(ex.note)}</div>` : ""}
+          ${ex.note ? `<div class="bank-q-note">${esc(ex.note)}</div>` : ""}
         </div>
 
-        <div style="display:flex; align-items:center; gap:0.45rem; flex-wrap:wrap">
-          <div class="status-seg">
-            ${EXERCISE_STATUSES.map((st) => `
-              <button type="button" data-bk-exam="${esc(ex.examId)}" data-bk-q="${ex.q}" data-st="${st.id}" class="${ex.status === st.id ? "is-active" : ""}">${esc(st.short)}</button>
-            `).join("")}
+        <div class="bank-row-footer">
+          <div class="bank-grading-group">
+            <div class="status-seg">
+              ${EXERCISE_STATUSES.map((st) => `
+                <button type="button" data-bk-exam="${esc(ex.examId)}" data-bk-q="${ex.q}" data-st="${st.id}" class="${ex.status === st.id ? "is-active" : ""}">${esc(st.short)}</button>
+              `).join("")}
+            </div>
+            <div class="score10-wrap" title="Nota intuitiva del 0 al 10 (se convierte automáticamente a puntos IB)">
+              <span class="muted">Nota</span>
+              <input type="number" step="0.5" min="0" max="10" class="input" data-bk-s10-exam="${esc(ex.examId)}" data-bk-s10-q="${ex.q}" value="${ex.score10 ?? ""}" placeholder="/10" />
+            </div>
           </div>
-          <div class="score10-wrap" title="Nota intuitiva del 0 al 10 (se convierte automáticamente a puntos IB)">
-            <span class="muted">Nota</span>
-            <input type="number" step="0.5" min="0" max="10" class="input" data-bk-s10-exam="${esc(ex.examId)}" data-bk-s10-q="${ex.q}" value="${ex.score10 ?? ""}" placeholder="/10" />
-          </div>
-        </div>
 
-        <div style="display:flex; align-items:center; gap:0.32rem; flex-wrap:wrap">
-          <button type="button" class="btn btn-cyan btn-xs" data-bk-timer-exam="${esc(ex.examId)}" data-bk-timer-q="${ex.q}" title="Iniciar temporizador óptimo (${ex.optimalMin} min)">▶ ${ex.optimalMin}m</button>
-          <a class="btn btn-xs" href="${esc(ex.examDef.enunciadoUrl)}" target="_blank" rel="noopener">PDF ↗</a>
-          ${ex.examDef.solucionUrl && showSol ? `<a class="btn btn-good btn-xs" href="${esc(ex.examDef.solucionUrl)}" target="_blank" rel="noopener">Sol ↗</a>` : ""}
-          <button type="button" class="btn btn-soft btn-xs" data-bk-open="${esc(ex.examId)}" data-bk-focus="${ex.q}">Detalle</button>
+          <div class="bank-actions-group">
+            <button type="button" class="btn btn-cyan btn-xs" data-bk-timer-exam="${esc(ex.examId)}" data-bk-timer-q="${ex.q}" title="Iniciar temporizador óptimo (${ex.optimalMin} min)">▶ ${ex.optimalMin} min</button>
+            <a class="btn btn-ghost btn-xs" href="${esc(ex.examDef.enunciadoUrl)}" target="_blank" rel="noopener">PDF ↗</a>
+            ${ex.examDef.solucionUrl && showSol ? `<a class="btn btn-good btn-xs" href="${esc(ex.examDef.solucionUrl)}" target="_blank" rel="noopener">Sol ↗</a>` : ""}
+            <button type="button" class="btn btn-soft btn-xs" data-bk-open="${esc(ex.examId)}" data-bk-focus="${ex.q}">Detalle</button>
+          </div>
         </div>
-      </div>
+      </article>
     `;
   }).join("");
 
@@ -745,7 +866,7 @@ function renderBankView() {
 }
 
 /* ==========================================================================
-   Exam Detail Drawer (Nota 1-10 -> IB real + Chips Fallos + Timer)
+   Exam Detail Drawer (más amplio, claro y agradable de leer y puntuar)
    ========================================================================== */
 
 function openExamDrawer(examId, focusQuestion = null) {
@@ -782,6 +903,8 @@ function renderExamDrawer() {
   const derived = getExamDerived(def, rec, state.settings.gradeBoundaries, state.settings.syllabusStatus);
   const showSol = canSeeSolutions();
 
+  document.getElementById("drawer-exam-eyebrow").textContent =
+    `${def.folderLabel} · ${def.calculator ? "Calculadora GDC permitida" : "Sin calculadora (Mat. NM)"}`;
   document.getElementById("drawer-exam-title").textContent = def.title;
 
   document.getElementById("drawer-exam-links").innerHTML = [
@@ -789,10 +912,9 @@ function renderExamDrawer() {
     def.solucionUrl && showSol
       ? `<a class="btn btn-good btn-sm" href="${esc(def.solucionUrl)}" target="_blank" rel="noopener">Solución / Esquema ↗</a>`
       : def.solucionUrl
-        ? `<span class="tag tag--warn">Solución oculta (Modo Alumno)</span>`
-        : `<span class="tag">Solo enunciado</span>`,
-    `<button type="button" class="btn btn-cyan btn-sm" id="btn-start-mock-timer">▶ Simulacro 90 min</button>`,
-    !def.calculator ? `<span class="tag tag--warn">Sin calculadora (Mat. NM)</span>` : `<span class="tag">GDC permitida</span>`
+        ? `<span class="pill-subtle pill-subtle--warn">Solución oculta (Modo Alumno)</span>`
+        : `<span class="muted micro-hint">Solo enunciado</span>`,
+    `<button type="button" class="btn btn-cyan btn-sm" id="btn-start-mock-timer">▶ Simulacro 90 min</button>`
   ].join("");
 
   const statusOpts = EXAM_STATUSES.map((s) => `<option value="${s.id}" ${derived.status === s.id ? "selected" : ""}>${esc(s.label)}</option>`).join("");
@@ -823,36 +945,46 @@ function renderExamDrawer() {
     const suggestion = mistakes.length > 0 ? suggestScoreFromMistakes(mistakes, qMax) : null;
     const primarySub = meta.subtopics[0] || "";
     const rowCls = meta.mai2026 === "out" ? "exercise-item--out" : st !== "pendiente" ? `exercise-item--${st}` : "";
+    const rowKey = `${openExamId}:${q}`;
+    const isMistakesOpen = expandedMistakeRows.has(rowKey);
 
     const segBtns = EXERCISE_STATUSES.map((s) =>
       `<button type="button" data-q="${q}" data-st="${s.id}" class="${st === s.id ? "is-active" : ""}">${esc(s.short)}</button>`
     ).join("");
+
+    const activeMistakePills = mistakes.map((mid) => {
+      const mDef = IB_MISTAKE_MAP[mid];
+      const cls = mid === "follow_through" ? "pill-subtle--info" : "pill-subtle--bad";
+      return `<span class="pill-subtle ${cls}">${esc(mDef ? mDef.short : mid)}</span>`;
+    }).join("");
 
     const mistakeChips = IB_MISTAKES.map((m) => {
       const on = mistakes.includes(m.id);
       return `<button type="button" class="mistake-chip ${on ? "is-on" : ""}" data-q-mistake="${q}" data-m="${m.id}" title="${esc(m.ibRule)}">${esc(m.short)}</button>`;
     }).join("");
 
-    const timeBadge = ex?.timeSpentSec > 0
-      ? `<span class="tag tag--sol mono" title="Tiempo real dedicado">⏱ ${formatDurationCompact(ex.timeSpentSec)}</span>`
+    const statusFlag = meta.mai2026 === "out"
+      ? `<span class="pill-subtle pill-subtle--out" title="${esc(meta.outReason || "")}">Fuera MAI 2026</span>`
+      : meta.syllabusFit === "proximo"
+        ? `<span class="pill-subtle pill-subtle--warn">Próximo tema</span>`
+        : "";
+
+    const timeText = ex?.timeSpentSec > 0
+      ? `<span class="pill-subtle pill-subtle--good mono" title="Tiempo real dedicado">⏱ ${formatDurationCompact(ex.timeSpentSec)}</span>`
       : "";
 
     exRowsHtml += `
       <div class="exercise-item ${rowCls}" data-ex-row="${q}">
         <div class="exercise-head-line">
-          <div style="display:flex; align-items:center; gap:0.42rem; flex-wrap:wrap">
-            <span class="exercise-num">EJ. ${q}</span>
-            <span class="tag mono">${qMax} pts · ${meta.optimalMin}m</span>
-            ${meta.mai2026 === "out"
-              ? `<span class="tag tag--out" title="${esc(meta.outReason || "")}">Fuera MAI 2026</span>`
-              : meta.syllabusFit === "proximo"
-                ? `<span class="tag tag--warn">Próximo tema</span>`
-                : `<span class="tag tag--info">MAI 2026</span>`}
-            ${timeBadge}
+          <div class="exercise-head-left">
+            <span class="exercise-num">Ejercicio ${q}</span>
+            <span class="muted mono" style="font-size:0.78rem">${qMax} pts · ${meta.optimalMin} min</span>
+            ${statusFlag}
+            ${timeText}
           </div>
-          <div style="display:flex; align-items:center; gap:0.3rem; flex-wrap:wrap">
-            <button type="button" class="btn btn-cyan btn-xs" data-q-timer="${q}" title="Iniciar temporizador con tiempo óptimo IB (${meta.optimalMin} min)">▶ ${meta.optimalMin} min</button>
-            <button type="button" class="btn btn-ghost btn-xs" data-q-toggle-mai="${q}" title="Cambiar si entra o no en MAI 2026">${meta.mai2026 === "out" ? "Incluir en MAI" : "Marcar fuera MAI"}</button>
+          <div class="exercise-head-right">
+            <button type="button" class="btn btn-cyan btn-xs" data-q-timer="${q}" title="Temporizador óptimo IB (${meta.optimalMin} min)">▶ ${meta.optimalMin} min</button>
+            <button type="button" class="btn btn-ghost btn-xs" data-q-toggle-mai="${q}" title="Cambiar si entra en MAI 2026">${meta.mai2026 === "out" ? "Incluir en MAI" : "Fuera MAI"}</button>
           </div>
         </div>
 
@@ -860,94 +992,118 @@ function renderExamDrawer() {
 
         <div class="exercise-controls">
           <div class="status-seg">${segBtns}</div>
-          <div class="score10-wrap" title="Pon nota intuitiva del 0 al 10 y la app calcula los puntos IB">
-            <span class="muted">1–10:</span>
+          <div class="score10-wrap" title="Nota intuitiva del 0 al 10 (se pondera automáticamente a puntos IB)">
+            <span class="muted">1–10</span>
             <input type="number" step="0.5" min="0" max="10" class="input" data-q-s10="${q}" value="${ex?.score10 ?? ""}" placeholder="—" />
           </div>
-          <div class="pts-inline tabular" title="Puntos IB ponderados (editables directamente si tienes el esquema)">
-            <span class="muted">IB:</span>
+          <div class="pts-inline tabular" title="Puntos IB ponderados">
+            <span class="muted">IB</span>
             <input type="number" step="0.5" min="0" max="99" class="input" data-q-pts="${q}" value="${ex?.points ?? ""}" placeholder="Pts" />
             <span class="muted">/</span>
             <input type="number" step="0.5" min="1" max="99" class="input" data-q-max="${q}" value="${qMax}" />
           </div>
-          <select class="select" style="width:auto; min-width:175px; padding:0.25rem 0.45rem; font-size:0.78rem" data-q-subtopic="${q}">
+          <select class="select ex-subtopic-select" data-q-subtopic="${q}" aria-label="Subtema del ejercicio ${q}">
             ${subtopicOptsHtml(primarySub)}
           </select>
         </div>
 
-        <div class="mistakes-bar">
-          <span class="muted" style="font-size:0.71rem; font-weight:700; text-transform:uppercase">Fallos IB:</span>
-          ${mistakeChips}
+        <div class="mistakes-summary-row">
+          <button type="button" class="mistakes-toggle-btn ${isMistakesOpen ? "is-open" : ""}" data-q-toggle-mistakes="${q}">
+            ${mistakes.length > 0 ? `Fallos IB (${mistakes.length})` : "+ Marcar fallos IB"} ${isMistakesOpen ? "▴" : "▾"}
+          </button>
+          ${activeMistakePills}
         </div>
+
+        ${isMistakesOpen ? `<div class="mistakes-tray">${mistakeChips}</div>` : ""}
 
         ${suggestion ? `
           <div class="ib-advice-strip">
             <span>${esc(suggestion.advice)}</span>
-            <button type="button" class="btn btn-gold btn-xs" data-q-apply-sugg="${q}" data-sugg-pts="${suggestion.suggestedPoints}" data-sugg-s10="${suggestion.suggestedScore10}">
-              Aplicar (${suggestion.suggestedScore10}/10 · ${suggestion.suggestedPoints}/${qMax} pts)
+            <button type="button" class="btn btn-soft-gold btn-xs" data-q-apply-sugg="${q}" data-sugg-pts="${suggestion.suggestedPoints}" data-sugg-s10="${suggestion.suggestedScore10}">
+              Aplicar ${suggestion.suggestedScore10}/10 (${suggestion.suggestedPoints}/${qMax} pts)
             </button>
           </div>
         ` : ""}
 
-        <input type="text" class="input exercise-note-input" data-q-note="${q}" value="${esc(ex?.note || "")}" placeholder="Nota de este ejercicio (truco GDC, error cometido, repasar apartado b)…" />
+        <input type="text" class="input exercise-note-input" data-q-note="${q}" value="${esc(ex?.note || "")}" placeholder="Añadir nota sobre este ejercicio (truco GDC, fallo concreto, repasar apartado)…" />
       </div>
     `;
   }
 
   const attempts = rec?.attempts || [];
   const attemptsHtml = attempts.length
-    ? `<div class="attempts-list" style="margin-top:0.65rem">${attempts.map((a) => `
+    ? `<div class="attempts-list" style="margin-top:0.9rem">${attempts.map((a) => `
         <div class="attempt-row">
           <div>
-            <strong>${esc(formatDateES(a.date))}</strong>
-            <span class="tag" style="margin-left:0.35rem">${esc((MODE_MAP[a.mode] || PRACTICE_MODES[0]).label)}</span>
-            ${a.authorRole ? `<span class="tag tag--info" style="margin-left:0.25rem">${esc(roleLabel(a.authorRole))}</span>` : ""}
-            <div class="muted" style="margin-top:0.15rem">${esc(a.summary)}</div>
+            <div class="meta-line">
+              <strong>${esc(formatDateES(a.date))}</strong>
+              <span class="meta-sep">·</span>
+              <span>${esc((MODE_MAP[a.mode] || PRACTICE_MODES[0]).label)}</span>
+              ${a.authorRole ? `<span class="meta-sep">·</span><span>${esc(roleLabel(a.authorRole))}</span>` : ""}
+            </div>
+            <div class="muted" style="margin-top:0.2rem">${esc(a.summary)}</div>
           </div>
-          <div style="display:flex; align-items:center; gap:0.4rem">
-            ${a.ibGrade ? `<span class="ib-badge ${gradeBadgeClass(a.ibGrade)}" style="width:28px; height:28px; font-size:0.95rem">${a.ibGrade}</span>` : ""}
-            <button type="button" class="btn btn-ghost btn-xs" data-del-attempt="${esc(a.id)}">✕</button>
+          <div style="display:flex; align-items:center; gap:0.45rem">
+            ${a.ibGrade ? `<span class="ib-badge ${gradeBadgeClass(a.ibGrade)}" style="width:30px; height:30px; font-size:1rem">${a.ibGrade}</span>` : ""}
+            <button type="button" class="btn btn-ghost btn-xs" data-del-attempt="${esc(a.id)}" title="Eliminar intento">✕</button>
           </div>
         </div>
       `).join("")}</div>`
-    : `<p class="muted" style="font-size:0.79rem; margin:0.55rem 0 0">Sin intentos guardados aún en el historial.</p>`;
+    : "";
 
-  const projText = derived.hasExercisePoints
-    ? `Proyección por ejercicios (${derived.exercisePointsEarned}/${derived.exercisePointsMax} pts = ${derived.projectedPercent}%) → <strong>IB ${derived.projectedIbGrade}</strong>`
-    : "Puntúa cualquier ejercicio del 1 al 10 abajo para calcular la Nota IB real automáticamente.";
+  const heroTitle = derived.ibGrade ? getIBGradeDescription(derived.ibGrade) : "Sin nota todavía";
+  const heroSub = derived.score !== null
+    ? `${derived.score}/${derived.maxMarks} pts · ${derived.percent}% (nota del examen)`
+    : derived.hasExercisePoints
+      ? `Proyección: ${derived.exercisePointsEarned}/${derived.exercisePointsMax} pts (${derived.projectedPercent}%)`
+      : "Puntúa cualquier ejercicio del 1 al 10 abajo para calcular la Nota IB real.";
 
   document.getElementById("drawer-exam-body").innerHTML = `
     <div class="panel-card">
       <div class="panel-card-head">
-        <h3>Resultado global y Nota IB Real (1–7)</h3>
-        ${derived.hasExercisePoints ? `<button type="button" class="btn btn-cyan btn-sm" id="btn-apply-ex-sum">Pasar suma al total (${derived.exercisePointsEarned} pts)</button>` : ""}
-      </div>
-
-      <div class="form-grid-3" style="margin-bottom:0.75rem">
-        <div><label class="field-label" for="dx-status">Estado</label><select id="dx-status" class="select">${statusOpts}</select></div>
-        <div><label class="field-label" for="dx-mode">Modalidad</label><select id="dx-mode" class="select">${modeOpts}</select></div>
-        <div><label class="field-label" for="dx-date">Fecha</label><input id="dx-date" class="input" type="date" value="${esc(derived.lastPracticed || todayISO())}" /></div>
-      </div>
-
-      <div class="form-grid-2">
-        <div class="score-row">
-          <div><label class="field-label" for="dx-score">Puntuación IB</label><input id="dx-score" class="input tabular" type="number" step="0.5" min="0" max="300" value="${derived.score ?? ""}" placeholder="Auto o manual" /></div>
-          <span class="score-slash">/</span>
-          <div><label class="field-label" for="dx-max">Máximo</label><input id="dx-max" class="input tabular" type="number" min="1" max="300" value="${derived.maxMarks}" /></div>
-          <div><label class="field-label" for="dx-duration">Min.</label><input id="dx-duration" class="input tabular" style="width:70px" type="number" value="${rec?.durationMin || ""}" placeholder="90" /></div>
-        </div>
         <div>
-          <span class="field-label">Nota IB (1–7) ${derived.manualGrade ? `<button type="button" class="btn btn-ghost btn-xs" id="btn-clear-manual-grade">Usar auto</button>` : ""}</span>
-          <div class="ib-selector">${gradeButtons}</div>
+          <h3>Resultado y Nota IB (1–7)</h3>
+          <p class="panel-sub">Calificación automática ponderada según umbrales IB MAI NM</p>
+        </div>
+        ${derived.hasExercisePoints ? `<button type="button" class="btn btn-cyan btn-sm" id="btn-apply-ex-sum">Pasar suma (${derived.exercisePointsEarned} pts)</button>` : ""}
+      </div>
+
+      <div class="drawer-result-grid">
+        <div>
+          <div class="form-grid-3">
+            <div><label class="field-label" for="dx-status">Estado</label><select id="dx-status" class="select">${statusOpts}</select></div>
+            <div><label class="field-label" for="dx-mode">Modalidad</label><select id="dx-mode" class="select">${modeOpts}</select></div>
+            <div><label class="field-label" for="dx-date">Fecha</label><input id="dx-date" class="input" type="date" value="${esc(derived.lastPracticed || todayISO())}" /></div>
+          </div>
+
+          <div class="score-inputs-grid">
+            <div><label class="field-label" for="dx-score">Puntuación IB</label><input id="dx-score" class="input tabular" type="number" step="0.5" min="0" max="300" value="${derived.score ?? ""}" placeholder="Auto" /></div>
+            <span class="score-slash">/</span>
+            <div><label class="field-label" for="dx-max">Máximo</label><input id="dx-max" class="input tabular" type="number" min="1" max="300" value="${derived.maxMarks}" /></div>
+            <div><label class="field-label" for="dx-duration">Minutos</label><input id="dx-duration" class="input tabular" type="number" value="${rec?.durationMin || ""}" placeholder="90" /></div>
+          </div>
+        </div>
+
+        <div class="grade-hero-box">
+          <div class="grade-hero-top">
+            <div class="grade-hero-badge tabular ${gradeBadgeClass(derived.ibGrade)}" id="dx-hero-badge">${derived.ibGrade ?? "—"}</div>
+            <div class="grade-hero-meta">
+              <div class="grade-hero-title" id="dx-hero-title">${esc(heroTitle)}</div>
+              <div class="grade-hero-sub tabular" id="dx-hero-sub">${esc(heroSub)}</div>
+            </div>
+          </div>
+          <div>
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.32rem">
+              <span class="muted" style="font-size:0.74rem">Ajuste manual 1–7</span>
+              ${derived.manualGrade ? `<button type="button" class="btn btn-ghost btn-xs" id="btn-clear-manual-grade">Usar auto</button>` : ""}
+            </div>
+            <div class="ib-selector">${gradeButtons}</div>
+          </div>
         </div>
       </div>
 
-      <div class="score-summary-box tabular" id="dx-score-summary">
-        <div>
-          ${derived.score !== null
-            ? `<strong>Nota oficial:</strong> ${derived.score}/${derived.maxMarks} (${derived.percent}%) → <strong>IB ${derived.ibGrade}</strong>`
-            : projText}
-        </div>
+      <div class="drawer-save-row">
+        <span class="muted micro-hint">${attempts.length ? `${attempts.length} intento${attempts.length === 1 ? "" : "s"} en historial` : "Guarda un intento para registrar la evolución en la gráfica."}</span>
         <button type="button" class="btn btn-primary btn-sm" id="btn-save-attempt">Guardar intento</button>
       </div>
 
@@ -956,28 +1112,32 @@ function renderExamDrawer() {
 
     <div class="panel-card">
       <div class="panel-card-head">
-        <h3>Ejercicios (${derived.doneCount}/${derived.totalQuestions} · ${derived.maiInCount} MAI 2026)</h3>
-        <div style="display:flex; gap:0.35rem; flex-wrap:wrap; align-items:center">
+        <div>
+          <h3>Ejercicios (${derived.doneCount}/${derived.totalQuestions})</h3>
+          <p class="panel-sub">${derived.maiInCount} entran en MAI NM 2026${hiddenOutCount > 0 ? ` · ${hiddenOutCount} ocultos fuera de temario` : ""}</p>
+        </div>
+        <div class="btn-row">
           ${derived.maiOutCount > 0 ? `
-            <label style="font-size:0.78rem; display:inline-flex; align-items:center; gap:0.32rem; cursor:pointer">
+            <label class="check-label" style="font-size:0.8rem">
               <input type="checkbox" id="chk-hide-out" ${hideOutInDrawer ? "checked" : ""} />
               Ocultar fuera de MAI (${derived.maiOutCount})
             </label>
           ` : ""}
           <button type="button" class="btn btn-soft btn-xs" id="btn-log-ex-today">Guardar sesión</button>
-          <button type="button" class="btn btn-xs" id="btn-add-question">+ Ej.</button>
+          <button type="button" class="btn btn-ghost btn-xs" id="btn-add-question">+ Ej.</button>
         </div>
       </div>
-      ${hiddenOutCount > 0 ? `<p class="muted" style="margin:0 0 0.65rem; font-size:0.78rem">Ocultos ${hiddenOutCount} ejercicios que no entran en MAI NM 2026 (lógica proposicional o MAA). Desmarca la casilla superior si quieres verlos.</p>` : ""}
       <div class="exercise-list" id="drawer-exercise-list">${exRowsHtml}</div>
     </div>
 
     <div class="panel-card">
       <div class="panel-card-head">
-        <h3>Notas generales de este examen</h3>
-        <span class="muted" style="font-size:0.76rem">Sincronizadas y visibles en «Notas»</span>
+        <div>
+          <h3>Notas generales del examen</h3>
+          <p class="panel-sub">Visibles también en la pestaña «Notas» y sincronizadas con Google Drive</p>
+        </div>
       </div>
-      <textarea id="dx-notes" class="textarea" rows="3" placeholder="Conclusiones generales del examen, ritmo de tiempo o dudas para la próxima clase…">${esc(rec?.examNotes || "")}</textarea>
+      <textarea id="dx-notes" class="textarea" rows="3" placeholder="Conclusiones generales del examen, gestión del tiempo o dudas para la próxima clase…">${esc(rec?.examNotes || "")}</textarea>
     </div>
   `;
 
@@ -1006,9 +1166,19 @@ function bindDrawerEvents() {
     updateExamFields(state, examId, { score: e.target.value === "" ? null : Number(e.target.value), manualGrade: null }, syncConfig.role);
     const def = getExamDef(examId);
     const d = getExamDerived(def, state.exams[examId], state.settings.gradeBoundaries, state.settings.syllabusStatus);
-    document.querySelector("#dx-score-summary > div").innerHTML = d.score !== null
-      ? `<strong>Nota oficial:</strong> ${d.score}/${d.maxMarks} (${d.percent}%) → <strong>IB ${d.ibGrade}</strong>`
-      : "Sin puntuación manual";
+    const badge = document.getElementById("dx-hero-badge");
+    const title = document.getElementById("dx-hero-title");
+    const sub = document.getElementById("dx-hero-sub");
+    if (badge) {
+      badge.textContent = d.ibGrade ?? "—";
+      badge.className = `grade-hero-badge tabular ${gradeBadgeClass(d.ibGrade)}`;
+    }
+    if (title) title.textContent = d.ibGrade ? getIBGradeDescription(d.ibGrade) : "Sin nota todavía";
+    if (sub) {
+      sub.textContent = d.score !== null
+        ? `${d.score}/${d.maxMarks} pts · ${d.percent}% (nota del examen)`
+        : "Sin puntuación manual";
+    }
     renderAll();
   });
   document.getElementById("dx-max").addEventListener("input", (e) => {
@@ -1112,6 +1282,15 @@ function bindDrawerEvents() {
     });
   });
 
+  exList.querySelectorAll("[data-q-toggle-mistakes]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const key = `${examId}:${btn.dataset.qToggleMistakes}`;
+      if (expandedMistakeRows.has(key)) expandedMistakeRows.delete(key);
+      else expandedMistakeRows.add(key);
+      renderExamDrawer();
+    });
+  });
+
   exList.querySelectorAll("[data-q][data-st]").forEach((btn) => {
     btn.addEventListener("click", () => {
       updateExercise(state, examId, Number(btn.dataset.q), { status: btn.dataset.st }, syncConfig.role);
@@ -1172,6 +1351,7 @@ function bindDrawerEvents() {
       const mid = btn.dataset.m;
       const cur = state.exams[examId]?.exercises?.[String(q)]?.mistakes || [];
       const next = cur.includes(mid) ? cur.filter((x) => x !== mid) : [...cur, mid];
+      expandedMistakeRows.add(`${examId}:${q}`);
       updateExercise(state, examId, q, { mistakes: next }, syncConfig.role);
       renderExamDrawer();
       renderAll();
@@ -1226,21 +1406,21 @@ function renderHistoryView() {
     qHost.innerHTML = `<div class="queue-list">${queue.map((item) => {
       const isFail = item.status === "fallado";
       const label = item.type === "exercise" ? `${item.examDef.shortTitle} · Ej. ${item.qNum}` : `${item.examDef.title}`;
-      const mChips = (item.mistakes || []).map((id) => `<span class="tag tag--bad">${esc(IB_MISTAKE_MAP[id]?.short || id)}</span>`).join("");
+      const mText = (item.mistakes || []).map((id) => IB_MISTAKE_MAP[id]?.short || id).join(", ");
       return `
         <div class="queue-item ${isFail ? "queue-item--fallado" : "queue-item--repasar"}">
           <div>
-            <div style="display:flex; align-items:center; gap:0.38rem; flex-wrap:wrap">
+            <div class="meta-line">
               <strong>${esc(label)}</strong>
-              <span class="tag ${isFail ? "tag--bad" : "tag--warn"}">${isFail ? "Duda" : "Repasar"}</span>
-              ${item.score10 != null ? `<span class="tag mono">${item.score10}/10</span>` : ""}
-              ${mChips}
+              <span class="pill-subtle ${isFail ? "pill-subtle--bad" : "pill-subtle--warn"}">${isFail ? "Duda" : "Repasar"}</span>
+              ${item.score10 != null ? `<span class="mono muted">${item.score10}/10</span>` : ""}
+              ${mText ? `<span class="meta-sep">·</span><span class="muted">${esc(mText)}</span>` : ""}
             </div>
-            ${item.note ? `<div class="muted" style="font-size:0.8rem; margin-top:0.2rem">${esc(item.note)}</div>` : ""}
+            ${item.note ? `<div class="muted" style="font-size:0.82rem; margin-top:0.28rem">${esc(item.note)}</div>` : ""}
           </div>
-          <div style="display:flex; gap:0.28rem; flex-shrink:0">
+          <div style="display:flex; gap:0.35rem; flex-shrink:0">
             ${item.type === "exercise" ? `<button type="button" class="btn btn-good btn-xs" data-resolve-ex="${esc(item.examId)}" data-resolve-q="${item.qNum}">✓ Bien</button>` : ""}
-            <button type="button" class="btn btn-xs" data-jump-exam="${esc(item.examId)}" data-jump-q="${item.qNum || ""}">Abrir</button>
+            <button type="button" class="btn btn-ghost btn-xs" data-jump-exam="${esc(item.examId)}" data-jump-q="${item.qNum || ""}">Abrir</button>
           </div>
         </div>
       `;
@@ -1265,22 +1445,22 @@ function renderHistoryView() {
   } else {
     tHost.innerHTML = `<div class="timeline-list">${logs.map((entry) => {
       const def = getExamDef(entry.examId);
-      const exChips = entry.exerciseNumbers?.length ? `<span class="tag">Ej. ${entry.exerciseNumbers.join(", ")}</span>` : "";
+      const exStr = entry.exerciseNumbers?.length ? `Ej. ${entry.exerciseNumbers.join(", ")}` : "";
       return `
         <div class="timeline-item">
           <div>
-            <div style="display:flex; align-items:center; gap:0.4rem; flex-wrap:wrap">
+            <div class="meta-line">
               <span class="timeline-date">${esc(formatDateES(entry.date))}</span>
               <strong>${esc(def ? def.title : entry.examId)}</strong>
-              ${entry.authorRole ? `<span class="tag tag--info">${esc(roleLabel(entry.authorRole))}</span>` : ""}
-              ${entry.ibGrade ? `<span class="tag tag--sol">IB ${entry.ibGrade}</span>` : ""}
-              ${exChips}
+              ${entry.ibGrade ? `<span class="pill-subtle pill-subtle--good">IB ${entry.ibGrade}</span>` : ""}
+              ${entry.authorRole ? `<span class="muted">· ${esc(roleLabel(entry.authorRole))}</span>` : ""}
+              ${exStr ? `<span class="muted">· ${esc(exStr)}</span>` : ""}
             </div>
-            <div class="muted" style="font-size:0.81rem; margin-top:0.2rem">${esc(entry.summary)}</div>
+            <div class="muted" style="font-size:0.83rem; margin-top:0.25rem">${esc(entry.summary)}</div>
           </div>
-          <div style="display:flex; gap:0.25rem; flex-shrink:0">
-            ${def ? `<button type="button" class="btn btn-xs" data-log-jump="${esc(def.id)}">Abrir</button>` : ""}
-            <button type="button" class="btn btn-ghost btn-xs" data-log-del="${esc(entry.id)}">✕</button>
+          <div style="display:flex; gap:0.28rem; flex-shrink:0">
+            ${def ? `<button type="button" class="btn btn-ghost btn-xs" data-log-jump="${esc(def.id)}">Abrir</button>` : ""}
+            <button type="button" class="btn btn-ghost btn-xs" data-log-del="${esc(entry.id)}" title="Eliminar">✕</button>
           </div>
         </div>
       `;
@@ -1313,22 +1493,25 @@ function renderNotesView() {
       host.innerHTML = `<div class="empty-state"><strong>Sin notas escritas dentro de exámenes o ejercicios.</strong></div>`;
       return;
     }
-    host.innerHTML = items.map((item) => `
-      <article class="note-card">
-        <div class="note-card-head">
-          <div>
-            <h4 class="note-title">${esc(item.source === "exercise" ? `${item.examDef.title} · Ej. ${item.qNum}` : `${item.examDef.title} · General`)}</h4>
-            <div class="note-meta">
-              ${item.date ? `<span>${esc(formatDateES(item.date))}</span>` : ""}
-              <span class="tag tag--info">${esc(roleLabel(item.authorRole))}</span>
-              ${item.topic && TOPIC_MAP[item.topic] ? `<span class="tag">${esc(TOPIC_MAP[item.topic].short)}</span>` : ""}
+    host.innerHTML = items.map((item) => {
+      const metaParts = [
+        item.date ? esc(formatDateES(item.date)) : null,
+        esc(roleLabel(item.authorRole)),
+        item.topic && TOPIC_MAP[item.topic] ? esc(TOPIC_MAP[item.topic].short) : null
+      ].filter(Boolean);
+      return `
+        <article class="note-card">
+          <div class="note-card-head">
+            <div>
+              <h4 class="note-title">${esc(item.source === "exercise" ? `${item.examDef.title} · Ej. ${item.qNum}` : `${item.examDef.title} · General`)}</h4>
+              <div class="meta-line note-meta">${metaParts.join(`<span class="meta-sep">·</span>`)}</div>
             </div>
+            <button type="button" class="btn btn-soft btn-xs" data-note-open-exam="${esc(item.examId)}" data-note-q="${item.qNum || ""}">Abrir</button>
           </div>
-          <button type="button" class="btn btn-soft btn-xs" data-note-open-exam="${esc(item.examId)}" data-note-q="${item.qNum || ""}">Abrir</button>
-        </div>
-        <p class="note-body">${esc(item.text)}</p>
-      </article>
-    `).join("");
+          <p class="note-body">${esc(item.text)}</p>
+        </article>
+      `;
+    }).join("");
     host.querySelectorAll("[data-note-open-exam]").forEach((b) => {
       b.addEventListener("click", () => openExamDrawer(b.dataset.noteOpenExam, b.dataset.noteQ ? Number(b.dataset.noteQ) : null));
     });
@@ -1344,7 +1527,7 @@ function renderNotesView() {
   list.sort((a, b) => (a.pinned !== b.pinned ? (a.pinned ? -1 : 1) : (b.date || "").localeCompare(a.date || "")));
 
   if (list.length === 0) {
-    host.innerHTML = `<div class="empty-state"><strong>Aún no hay notas aquí.</strong><p style="margin:0.35rem 0 0; font-size:0.82rem">Crea resúmenes de clase, errores frecuentes o deberes en el panel izquierdo.</p></div>`;
+    host.innerHTML = `<div class="empty-state"><strong>Aún no hay notas aquí.</strong><p class="chart-empty-sub">Crea resúmenes de clase, errores frecuentes o deberes en el panel izquierdo.</p></div>`;
     return;
   }
 
@@ -1352,25 +1535,29 @@ function renderNotesView() {
     const cat = NOTE_CAT_MAP[n.category] || NOTE_CATEGORIES[0];
     const topicObj = n.topic ? TOPIC_MAP[n.topic] : null;
     const examDef = n.examId ? getExamDef(n.examId) : null;
+    const metaParts = [
+      `<span class="tabular">${esc(formatDateES(n.date))}</span>`,
+      esc(roleLabel(n.authorRole)),
+      esc(cat.label),
+      topicObj ? esc(topicObj.short) : null,
+      examDef ? `<button type="button" class="btn btn-ghost btn-xs" data-note-open-exam="${esc(examDef.id)}">${esc(examDef.shortTitle)} ↗</button>` : null
+    ].filter(Boolean);
+
     return `
       <article class="note-card ${n.pinned ? "note-card--pinned" : ""} ${n.reviewed ? "note-card--reviewed" : ""}">
         <div class="note-card-head">
           <div>
-            <h4 class="note-title">${n.pinned ? "📌 " : ""}${esc(n.title)}</h4>
-            <div class="note-meta">
-              <span class="tabular">${esc(formatDateES(n.date))}</span>
-              <span class="tag tag--info">${esc(roleLabel(n.authorRole))}</span>
-              <span class="tag">${esc(cat.label)}</span>
-              ${topicObj ? `<span class="tag">${esc(topicObj.short)}</span>` : ""}
-              ${examDef ? `<button type="button" class="btn btn-ghost btn-xs" data-note-open-exam="${esc(examDef.id)}">${esc(examDef.shortTitle)} ↗</button>` : ""}
-              ${n.reviewed ? `<span class="tag tag--sol">Repasado ✓</span>` : `<span class="tag tag--warn">Por repasar</span>`}
+            <div class="exam-title-line">
+              <h4 class="note-title">${n.pinned ? "📌 " : ""}${esc(n.title)}</h4>
+              <span class="pill-subtle ${n.reviewed ? "pill-subtle--good" : "pill-subtle--warn"}">${n.reviewed ? "Repasado ✓" : "Por repasar"}</span>
             </div>
+            <div class="meta-line note-meta">${metaParts.join(`<span class="meta-sep">·</span>`)}</div>
           </div>
           <div class="note-actions">
-            <button type="button" class="btn btn-xs ${n.reviewed ? "" : "btn-good"}" data-note-review="${esc(n.id)}">${n.reviewed ? "Reabrir" : "✓ Repasado"}</button>
-            <button type="button" class="btn btn-ghost btn-xs" data-note-pin="${esc(n.id)}">📌</button>
+            <button type="button" class="btn btn-xs ${n.reviewed ? "btn-ghost" : "btn-good"}" data-note-review="${esc(n.id)}">${n.reviewed ? "Reabrir" : "✓ Repasado"}</button>
+            <button type="button" class="btn btn-ghost btn-xs" data-note-pin="${esc(n.id)}" title="Fijar">📌</button>
             <button type="button" class="btn btn-ghost btn-xs" data-note-edit="${esc(n.id)}">Editar</button>
-            <button type="button" class="btn btn-ghost btn-xs" data-note-del="${esc(n.id)}">✕</button>
+            <button type="button" class="btn btn-ghost btn-xs" data-note-del="${esc(n.id)}" title="Eliminar">✕</button>
           </div>
         </div>
         <p class="note-body">${esc(n.body)}</p>
@@ -1403,13 +1590,13 @@ function resetNoteForm() {
   document.getElementById("note-form").reset();
   document.getElementById("note-edit-id").value = "";
   document.getElementById("note-date").value = todayISO();
-  document.getElementById("note-form-heading").textContent = "Nueva nota de repaso / clase";
+  document.getElementById("note-form-heading").textContent = "Nueva nota";
   document.getElementById("btn-note-save").textContent = "Guardar nota";
   document.getElementById("btn-note-cancel").style.display = "none";
 }
 
 /* ==========================================================================
-   Modals: Countdowns, Syllabus, GDC, Settings & Firebase Sync
+   Modals: Countdowns, Syllabus, GDC, Settings & Google Drive Sync Wizard
    ========================================================================== */
 
 function openModal(id) {
@@ -1420,6 +1607,31 @@ function openModal(id) {
 function closeModal(id) {
   const el = document.getElementById(id);
   if (el) { el.classList.remove("is-open"); el.setAttribute("aria-hidden", "true"); }
+}
+
+function switchSettingsTab(tabName) {
+  document.querySelectorAll(".modal-tab").forEach((b) => {
+    b.classList.toggle("is-active", b.dataset.stab === tabName);
+  });
+  document.querySelectorAll(".modal-tab-panel").forEach((p) => {
+    p.classList.toggle("is-active", p.id === `spanel-${tabName}`);
+  });
+}
+
+function openSettingsModal(defaultTab = "sync") {
+  populateSettingsModal();
+  switchSettingsTab(defaultTab);
+  openModal("settings-modal-backdrop");
+}
+
+function closeToolsMenu() {
+  const dd = document.getElementById("tools-dropdown");
+  const btn = document.getElementById("btn-tools-menu");
+  if (dd) {
+    dd.classList.remove("is-open");
+    dd.setAttribute("aria-hidden", "true");
+  }
+  if (btn) btn.setAttribute("aria-expanded", "false");
 }
 
 function openCountdownModal() {
@@ -1441,10 +1653,10 @@ function openSyllabusModal() {
     return `
       <div class="syllabus-row">
         <div>
-          <span class="tag">${esc(s.topic)}</span>
-          <strong style="margin-left:0.35rem">${esc(s.label)}</strong>
+          <span class="pill-subtle">${esc(s.topic)}</span>
+          <strong style="margin-left:0.45rem">${esc(s.label)}</strong>
         </div>
-        <select class="select" style="width:auto; min-width:165px; padding:0.25rem 0.45rem; font-size:0.79rem" data-syl-id="${esc(s.id)}">
+        <select class="select select--compact" data-syl-id="${esc(s.id)}">
           ${SYLLABUS_LEVELS.map((l) => `<option value="${l.id}" ${cur === l.id ? "selected" : ""}>${esc(l.label)}</option>`).join("")}
         </select>
       </div>
@@ -1466,8 +1678,8 @@ function openGdcModal() {
   document.getElementById("gdc-cheatsheet-body").innerHTML = GDC_CHEATSHEET.map((item) => `
     <div class="gdc-card">
       <h4>${esc(item.topic)}</h4>
-      <div class="gdc-line"><strong>TI-84 Plus:</strong> <span class="mono" style="font-size:0.77rem">${esc(item.ti84)}</span></div>
-      <div class="gdc-line"><strong>Casio CG50:</strong> <span class="mono" style="font-size:0.77rem">${esc(item.casio)}</span></div>
+      <div class="gdc-line"><strong>TI-84 Plus:</strong> <span class="mono" style="font-size:0.79rem">${esc(item.ti84)}</span></div>
+      <div class="gdc-line"><strong>Casio CG50:</strong> <span class="mono" style="font-size:0.79rem">${esc(item.casio)}</span></div>
       <div class="gdc-line muted">💡 ${esc(item.tip)}</div>
     </div>
   `).join("");
@@ -1475,9 +1687,20 @@ function openGdcModal() {
 }
 
 function populateSettingsModal() {
-  document.getElementById("sync-db-url").value = syncConfig.dbUrl || "";
+  document.getElementById("sync-script-url").value = syncConfig.scriptUrl || "";
   document.getElementById("sync-room-code").value = syncConfig.roomCode || "";
-  document.getElementById("firebase-rules-box").textContent = FIREBASE_RULES_SNIPPET;
+  document.getElementById("apps-script-box").textContent = APPS_SCRIPT_CODE;
+
+  const wizard = document.getElementById("sync-wizard-details");
+  if (wizard) {
+    wizard.open = !syncConfig.enabled;
+  }
+
+  updateSyncUI(syncClient.status, syncClient.lastDetail, {
+    rev: syncClient.rev,
+    lastSyncedAt: syncClient.lastSyncedAt,
+    dirty: syncClient.dirty
+  });
 
   document.getElementById("set-role").value = syncConfig.role || "profesor";
   document.getElementById("set-student-name").value = state.settings.studentName || "";
@@ -1497,7 +1720,26 @@ function populateSettingsModal() {
 
   document.getElementById("backup-status-text").textContent = state.lastExportedAt
     ? `Última copia JSON exportada: ${formatDateES(state.lastExportedAt.slice(0, 10))}.`
-    : "Además de Firebase en vivo, puedes descargar una copia local JSON o CSV en cualquier momento.";
+    : "Además de la sincronización con tu Google Drive, puedes descargar una copia local JSON o CSV cuando quieras.";
+}
+
+async function copyStudentInviteLink() {
+  const scriptUrl = document.getElementById("sync-script-url").value.trim() || syncConfig.scriptUrl;
+  const roomCode = document.getElementById("sync-room-code").value.trim() || syncConfig.roomCode;
+  const check = validateScriptUrl(scriptUrl);
+  if (!check.ok || !roomCode || roomCode.trim().length < 3) {
+    showToast("Completa primero la URL /exec y el código de sala en el paso 4");
+    const wizard = document.getElementById("sync-wizard-details");
+    if (wizard) wizard.open = true;
+    return;
+  }
+  const link = encodeInviteLink(window.location.href, check.url, roomCode, "alumno");
+  try {
+    await navigator.clipboard.writeText(link);
+    showToast("Enlace listo para tu alumno copiado — envíaselo por WhatsApp");
+  } catch {
+    window.prompt("Copia este enlace y envíaselo a tu alumno:", link);
+  }
 }
 
 function triggerDownload(filename, content, mimeType) {
@@ -1620,18 +1862,41 @@ function bindGlobalEvents() {
 
   document.getElementById("btn-role-pill").addEventListener("click", () => {
     syncConfig = saveSyncConfig({ ...syncConfig, role: syncConfig.role === "profesor" ? "alumno" : "profesor" });
+    syncClient.config = syncConfig;
     renderAll();
     if (openExamId) renderExamDrawer();
     showToast(`Cambiado a Modo ${syncConfig.role === "alumno" ? "Alumno" : "Profesor"}`);
   });
 
-  document.getElementById("btn-sync-pill").addEventListener("click", () => {
-    populateSettingsModal();
-    openModal("settings-modal-backdrop");
+  document.getElementById("btn-sync-pill").addEventListener("click", () => openSettingsModal("sync"));
+  document.getElementById("btn-sync-now-top").addEventListener("click", handleSyncNow);
+  document.getElementById("btn-sync-now-modal").addEventListener("click", handleSyncNow);
+
+  // Recursos dropdown
+  const toolsBtn = document.getElementById("btn-tools-menu");
+  const toolsDd = document.getElementById("tools-dropdown");
+  toolsBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const open = !toolsDd.classList.contains("is-open");
+    toolsDd.classList.toggle("is-open", open);
+    toolsDd.setAttribute("aria-hidden", String(!open));
+    toolsBtn.setAttribute("aria-expanded", String(open));
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".tools-menu-wrap")) closeToolsMenu();
   });
 
-  document.getElementById("btn-open-gdc").addEventListener("click", openGdcModal);
+  document.getElementById("btn-open-gdc").addEventListener("click", () => { closeToolsMenu(); openGdcModal(); });
+  document.getElementById("btn-menu-syllabus").addEventListener("click", () => { closeToolsMenu(); openSyllabusModal(); });
   document.getElementById("btn-open-syllabus").addEventListener("click", openSyllabusModal);
+  document.getElementById("btn-print-report").addEventListener("click", () => { closeToolsMenu(); buildPrintReportAndPrint(); });
+  document.getElementById("drive-root-link").addEventListener("click", closeToolsMenu);
+
+  // Settings modal tabs
+  document.getElementById("btn-open-settings").addEventListener("click", () => openSettingsModal("sync"));
+  document.querySelectorAll(".modal-tab").forEach((tab) => {
+    tab.addEventListener("click", () => switchSettingsTab(tab.dataset.stab));
+  });
 
   // Exams filters
   document.getElementById("category-pills").addEventListener("click", (e) => {
@@ -1655,6 +1920,15 @@ function bindGlobalEvents() {
     if (e.target.closest("[data-stop-row]")) return;
     const row = e.target.closest("[data-exam-id]");
     if (row) openExamDrawer(row.dataset.examId);
+  });
+  examList.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      const row = e.target.closest("[data-exam-id]");
+      if (row && !e.target.closest("[data-stop-row]")) {
+        e.preventDefault();
+        openExamDrawer(row.dataset.examId);
+      }
+    }
   });
 
   // Bank filters
@@ -1763,40 +2037,66 @@ function bindGlobalEvents() {
   document.getElementById("notes-filter-cat").addEventListener("change", (e) => { filters.noteCategory = e.target.value; renderNotesView(); });
   document.getElementById("notes-filter-topic").addEventListener("change", (e) => { filters.noteTopic = e.target.value; renderNotesView(); });
 
-  // Settings, Sync & Backup modal
-  document.getElementById("btn-open-settings").addEventListener("click", () => { populateSettingsModal(); openModal("settings-modal-backdrop"); });
+  // 4-step Drive Sync wizard controls
+  document.getElementById("btn-copy-script").addEventListener("click", async () => {
+    const btn = document.getElementById("btn-copy-script");
+    try {
+      await navigator.clipboard.writeText(APPS_SCRIPT_CODE);
+      const orig = btn.textContent;
+      btn.textContent = "✓ Script copiado al portapapeles";
+      showToast("Script Code.gs copiado — pégalo ahora en script.new");
+      setTimeout(() => { btn.textContent = orig; }, 2400);
+    } catch {
+      const box = document.getElementById("apps-script-box");
+      if (box) box.hidden = false;
+      showToast("Desplegamos el código abajo para que puedas copiarlo manualmente");
+    }
+  });
 
-  document.getElementById("btn-copy-rules").addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText(FIREBASE_RULES_SNIPPET); showToast("Reglas de Firebase copiadas"); } catch { showToast("Selecciona y copia el bloque de reglas"); }
+  document.getElementById("btn-toggle-script-preview").addEventListener("click", () => {
+    const box = document.getElementById("apps-script-box");
+    const btn = document.getElementById("btn-toggle-script-preview");
+    if (!box) return;
+    box.hidden = !box.hidden;
+    btn.textContent = box.hidden ? "Ver código" : "Ocultar código";
+  });
+
+  document.getElementById("btn-generate-room").addEventListener("click", () => {
+    const inp = document.getElementById("sync-room-code");
+    inp.value = generateRoomCode();
+    inp.focus();
   });
 
   document.getElementById("btn-sync-connect").addEventListener("click", async () => {
-    const dbUrl = document.getElementById("sync-db-url").value.trim();
-    const roomCode = document.getElementById("sync-room-code").value.trim();
-    if (!dbUrl || !roomCode) return showToast("Introduce la URL de Firebase y un código de sala");
+    const scriptUrl = document.getElementById("sync-script-url").value.trim();
+    let roomCode = document.getElementById("sync-room-code").value.trim();
+    if (!roomCode) {
+      roomCode = generateRoomCode();
+      document.getElementById("sync-room-code").value = roomCode;
+    }
+    const check = validateScriptUrl(scriptUrl);
+    if (!check.ok) return showToast(check.error);
+
+    const btn = document.getElementById("btn-sync-connect");
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Probando conexión…";
     try {
-      await syncClient.testConnection(dbUrl, roomCode);
-      syncConfig = saveSyncConfig({ ...syncConfig, enabled: true, dbUrl, roomCode });
+      await syncClient.testConnection(check.url, roomCode);
+      syncConfig = saveSyncConfig({ ...syncConfig, enabled: true, scriptUrl: check.url, roomCode });
       await syncClient.connect(syncConfig, state);
       populateSettingsModal();
-      showToast("¡Conectado en vivo con Firebase!");
+      showToast("¡Conectado gratis con tu Google Drive!");
     } catch (err) {
-      showToast(err.message || "Error al conectar con Firebase");
+      showToast(err.message || "Error al conectar con Google Drive");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = orig;
     }
   });
 
-  document.getElementById("btn-copy-student-link").addEventListener("click", async () => {
-    const dbUrl = document.getElementById("sync-db-url").value.trim() || syncConfig.dbUrl;
-    const roomCode = document.getElementById("sync-room-code").value.trim() || syncConfig.roomCode;
-    if (!dbUrl || !roomCode) return showToast("Configura primero la URL de Firebase y el código de sala");
-    const link = encodeInviteLink(window.location.href, dbUrl, roomCode, "alumno");
-    try {
-      await navigator.clipboard.writeText(link);
-      showToast("Enlace para tu alumno copiado — envíaselo por WhatsApp");
-    } catch {
-      window.prompt("Copia este enlace y envíaselo a tu alumno:", link);
-    }
-  });
+  document.getElementById("btn-copy-student-link").addEventListener("click", copyStudentInviteLink);
+  document.getElementById("btn-copy-student-link-wizard").addEventListener("click", copyStudentInviteLink);
 
   document.getElementById("btn-sync-disconnect").addEventListener("click", () => {
     syncClient.disconnect();
@@ -1818,6 +2118,7 @@ function bindGlobalEvents() {
   document.getElementById("btn-save-settings").addEventListener("click", () => {
     const nextRole = document.getElementById("set-role").value;
     syncConfig = saveSyncConfig({ ...syncConfig, role: nextRole });
+    syncClient.config = syncConfig;
     const bounds = [];
     document.querySelectorAll("[data-bound-idx]").forEach((inp) => { bounds[Number(inp.dataset.boundIdx)] = Number(inp.value); });
     updateSettings(state, {
@@ -1848,7 +2149,7 @@ function bindGlobalEvents() {
     reader.onload = () => {
       try {
         state = importBackupJSON(state, String(reader.result || ""), mode);
-        if (syncClient.config.enabled) syncClient.pushFullState(state);
+        if (syncClient.config.enabled) syncClient.pushFullState(state, { silent: true });
         renderAll();
         if (openExamId) renderExamDrawer();
         showToast("Copia importada correctamente");
@@ -1869,38 +2170,39 @@ function bindGlobalEvents() {
     showToast("Datos locales reiniciados");
   });
 
-  document.getElementById("btn-print-report").addEventListener("click", buildPrintReportAndPrint);
   document.getElementById("btn-modal-print").addEventListener("click", () => { closeModal("settings-modal-backdrop"); buildPrintReportAndPrint(); });
 
   document.querySelectorAll("[data-close-modal]").forEach((btn) => btn.addEventListener("click", () => closeModal(btn.dataset.closeModal)));
   document.querySelectorAll(".modal-backdrop").forEach((bd) => bd.addEventListener("click", (e) => { if (e.target === bd) closeModal(bd.id); }));
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
+      closeToolsMenu();
       document.querySelectorAll(".modal-backdrop").forEach((m) => closeModal(m.id));
       closeExamDrawer();
     }
   });
 }
 
-// Auto-import Firebase invite link if opened with ?sync=...&role=alumno
+// Auto-importar enlace de invitación del alumno (?sync=...&role=alumno)
 const invite = parseInviteFromSearch(window.location.search);
 if (invite) {
   syncConfig = saveSyncConfig(invite);
   try {
     window.history.replaceState({}, document.title, window.location.pathname);
   } catch {
-    // ignore
+    // ignorar
   }
 }
 
 populateStaticSelects();
 bindGlobalEvents();
 renderAll();
+updateSyncUI(syncConfig.enabled ? "connecting" : "local", syncConfig.enabled ? "Conectando con Google Drive…" : "Solo guardado local");
 
-// Connect Firebase if configured
+// Conectar automáticamente con Google Drive si ya estaba configurado
 if (syncConfig.enabled) {
   syncClient.connect(syncConfig, state);
 }
 
-// Refresh countdowns every minute
+// Refrescar contadores cada minuto
 setInterval(renderHudStrip, 60000);
